@@ -1,0 +1,38 @@
+[package]
+name = "openflow-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+name = "openflow_desktop"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+keyring = "4.1.6"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tauri = { version = "2", features = ["tray-icon"] }
+tauri-plugin-clipboard-manager = "2"
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-http = "2"
+thiserror = "2"
+tokio = { version = "1", features = ["io-util", "net", "process", "sync", "time"] }
+unicode-segmentation = "1.12"
+url = "2"
+
+[lints]
+workspace = true
+
+[target.'cfg(target_os = "linux")'.dependencies]
+atspi = { version = "0.30", features = ["proxies", "zbus"] }
+futures-util = "0.3"
+uuid = { version = "1", features = ["v4"] }
+zbus = { version = "5.19", default-features = false, features = ["async-io"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+axuielement = "0.9.1"

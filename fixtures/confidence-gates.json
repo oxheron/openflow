@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "description": "Backend-neutral regression cases for conservative cleanup gating.",
+  "cases": [
+    {
+      "id": "formatting-is-safe",
+      "language": "en",
+      "raw": "lets meet at five",
+      "proposal": "Let's meet at five.",
+      "edit_kind": "formatting",
+      "source_confidence": 0.98,
+      "llm_delta_nats_per_token": -0.1,
+      "protected": false,
+      "accept": true
+    },
+    {
+      "id": "high-confidence-lexical-is-blocked",
+      "language": "en",
+      "raw": "deploy to production",
+      "proposal": "deploy into production",
+      "edit_kind": "lexical",
+      "source_confidence": 0.91,
+      "llm_delta_nats_per_token": 2.2,
+      "protected": false,
+      "accept": false
+    },
+    {
+      "id": "medium-confidence-needs-margin",
+      "language": "fr",
+      "raw": "ouvrez le dépôt gitte",
+      "proposal": "ouvrez le dépôt Git",
+      "edit_kind": "lexical",
+      "source_confidence": 0.52,
+      "llm_delta_nats_per_token": 0.72,
+      "protected": false,
+      "accept": true
+    },
+    {
+      "id": "medium-confidence-weak-margin-is-blocked",
+      "language": "es",
+      "raw": "abre el archivo local",
+      "proposal": "abre un archivo local",
+      "edit_kind": "lexical",
+      "source_confidence": 0.48,
+      "llm_delta_nats_per_token": 0.2,
+      "protected": false,
+      "accept": false
+    },
+    {
+      "id": "low-confidence-nonnegative-is-accepted",
+      "language": "de",
+      "raw": "öffne die kontainer datei",
+      "proposal": "öffne die Container-Datei",
+      "edit_kind": "lexical",
+      "source_confidence": 0.21,
+      "llm_delta_nats_per_token": 0.08,
+      "protected": false,
+      "accept": true
+    },
+    {
+      "id": "number-is-always-protected",
+      "language": "en",
+      "raw": "send 150 dollars",
+      "proposal": "send 50 dollars",
+      "edit_kind": "lexical",
+      "source_confidence": 0.1,
+      "llm_delta_nats_per_token": 4.0,
+      "protected": true,
+      "accept": false
+    },
+    {
+      "id": "unicode-punctuation-is-safe",
+      "language": "ja",
+      "raw": "設定を開いてください",
+      "proposal": "設定を開いてください。",
+      "edit_kind": "formatting",
+      "source_confidence": 0.97,
+      "llm_delta_nats_per_token": 0.0,
+      "protected": false,
+      "accept": true
+    }
+  ]
+}
+

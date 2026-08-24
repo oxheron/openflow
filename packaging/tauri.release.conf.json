@@ -1,0 +1,27 @@
+{
+  "bundle": {
+    "externalBin": [
+      "binaries/openflow-server",
+      "binaries/openflow-asr-worker",
+      "binaries/openflow-llm-worker"
+    ],
+    "category": "Productivity",
+    "publisher": "OpenFlow contributors",
+    "copyright": "Copyright 2026 OpenFlow contributors",
+    "shortDescription": "Private, local-first voice dictation",
+    "longDescription": "OpenFlow captures speech on the desktop and transcribes it with locally hosted Whisper and language-model workers.",
+    "resources": {
+      "../../../LICENSE": "LICENSE",
+      "../../../packaging/THIRD_PARTY_NOTICES.md": "THIRD_PARTY_NOTICES.md",
+      "../../../packaging/THIRD_PARTY_LICENSES.txt": "THIRD_PARTY_LICENSES.txt"
+    },
+    "linux": {
+      "deb": {
+        "depends": ["libasound2", "libgomp1", "libvulkan1"]
+      },
+      "rpm": {
+        "depends": ["alsa-lib", "libgomp", "vulkan-loader"]
+      }
+    }
+  }
+}

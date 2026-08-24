@@ -1,0 +1,75 @@
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install desktop build dependencies
+        run: >-
+          sudo apt-get update && sudo apt-get install -y
+          libwebkit2gtk-4.1-dev
+          libappindicator3-dev
+          librsvg2-dev
+          libasound2-dev
+          patchelf
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo fmt --all --check
+      - name: Build mock workers for server integration tests
+        run: >-
+          cmake -S native -B native/build-rust-tests -DOPENFLOW_BUILD_TESTS=OFF &&
+          cmake --build native/build-rust-tests
+          --target openflow-asr-worker openflow-llm-worker --parallel 2
+      - run: cargo test --locked --workspace --all-targets
+        env:
+          OPENFLOW_TEST_ASR_WORKER: ${{ github.workspace }}/native/build-rust-tests/openflow-asr-worker
+          OPENFLOW_TEST_LLM_WORKER: ${{ github.workspace }}/native/build-rust-tests/openflow-llm-worker
+      - run: cargo clippy --locked --workspace --all-targets -- -D warnings
+
+  native:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure mock inference workers
+        run: cmake -S native -B native/build -DOPENFLOW_BUILD_TESTS=ON
+      - run: cmake --build native/build --parallel 2
+      - run: ctest --test-dir native/build --output-on-failure
+
+  desktop-web:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+
+  release-scripts:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install shellcheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - run: ./scripts/verify-test-layout.sh
+      - run: ./scripts/lint-release.sh

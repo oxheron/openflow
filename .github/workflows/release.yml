@@ -1,0 +1,212 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing vX.Y.Z tag to build"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - name: Install validation build dependencies
+        run: >-
+          sudo apt-get update && sudo apt-get install -y
+          build-essential
+          cmake
+          libwebkit2gtk-4.1-dev
+          libappindicator3-dev
+          librsvg2-dev
+          libasound2-dev
+          patchelf
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy,rustfmt
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - run: npm --prefix apps/desktop ci
+      - name: Build mock inference workers
+        run: >-
+          cmake -S native -B native/build-release-tests -DOPENFLOW_BUILD_TESTS=ON &&
+          cmake --build native/build-release-tests --parallel 2
+      - name: Run release-gating test suite
+        env:
+          OPENFLOW_TEST_ASR_WORKER: ${{ github.workspace }}/native/build-release-tests/openflow-asr-worker
+          OPENFLOW_TEST_LLM_WORKER: ${{ github.workspace }}/native/build-release-tests/openflow-llm-worker
+        run: |
+          ./scripts/verify-test-layout.sh
+          cargo fmt --all --check
+          cargo test --locked --workspace --all-targets
+          cargo clippy --locked --workspace --all-targets -- -D warnings
+          ctest --test-dir native/build-release-tests --output-on-failure
+          npm --prefix apps/desktop test
+          npm --prefix apps/desktop run build
+          npm --prefix apps/desktop run format:check
+      - name: Validate release inputs
+        run: |
+          ./scripts/verify-version.sh "$RELEASE_TAG"
+          ./scripts/lint-release.sh
+
+  build-linux:
+    needs: validate
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - name: Install Linux build dependencies
+        run: >-
+          sudo apt-get update && sudo apt-get install -y
+          build-essential
+          cmake
+          ninja-build
+          libwebkit2gtk-4.1-dev
+          libappindicator3-dev
+          librsvg2-dev
+          libasound2-dev
+          libvulkan-dev
+          glslc
+          spirv-headers
+          patchelf
+          rpm
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - run: npm --prefix apps/desktop ci
+      - name: Build Vulkan AppImage, Debian package, and RPM
+        env:
+          OPENFLOW_BUILD_JOBS: "2"
+        run: ./scripts/build-installers.sh --profile vulkan
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openflow-linux-x86_64
+          path: |
+            dist/release/x86_64-unknown-linux-gnu/*
+            !dist/release/x86_64-unknown-linux-gnu/SHA256SUMS
+          if-no-files-found: error
+
+  build-macos:
+    needs: validate
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: aarch64-apple-darwin
+          - runner: macos-15-intel
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.runner }}
+    env:
+      APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+      APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+      APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+      APPLE_ID: ${{ secrets.APPLE_ID }}
+      APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+      APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
+      - run: npm --prefix apps/desktop ci
+      - name: Select signing mode
+        run: |
+          if [[ -z "$APPLE_CERTIFICATE" ]]; then
+            echo "APPLE_SIGNING_IDENTITY=-" >> "$GITHUB_ENV"
+            echo "::warning::Building an ad-hoc signed macOS preview; configure Apple secrets before publishing the draft release."
+          elif [[ -z "$APPLE_CERTIFICATE_PASSWORD" ]]; then
+            echo "::error::APPLE_CERTIFICATE_PASSWORD is required with APPLE_CERTIFICATE."
+            exit 1
+          elif [[ -z "$APPLE_ID" || -z "$APPLE_PASSWORD" || -z "$APPLE_TEAM_ID" ]]; then
+            echo "::error::A Developer ID release also requires APPLE_ID, APPLE_PASSWORD, and APPLE_TEAM_ID for notarization."
+            exit 1
+          fi
+      - name: Build Metal application and DMG
+        env:
+          OPENFLOW_BUILD_JOBS: "2"
+        run: ./scripts/build-installers.sh --target "${{ matrix.target }}" --profile metal
+      - uses: actions/upload-artifact@v4
+        with:
+          name: openflow-macos-${{ matrix.target }}
+          path: |
+            dist/release/${{ matrix.target }}/*
+            !dist/release/${{ matrix.target }}/SHA256SUMS
+          if-no-files-found: error
+
+  publish-draft:
+    needs:
+      - build-linux
+      - build-macos
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: openflow-*
+          path: release-assets
+          merge-multiple: true
+      - name: Generate SPDX SBOM
+        uses: anchore/sbom-action@v0
+        with:
+          path: release-assets
+          format: spdx-json
+          output-file: release-assets/OpenFlow-${{ env.RELEASE_TAG }}.spdx.json
+          upload-artifact: false
+      - name: Generate checksums
+        run: ./scripts/write-checksums.sh release-assets
+      - name: Attest release artifacts
+        if: github.event.repository.visibility == 'public'
+        uses: actions/attest@v4
+        with:
+          subject-path: "release-assets/*"
+      - name: Create draft GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >-
+          gh release create "$RELEASE_TAG"
+          --verify-tag
+          --draft
+          --generate-notes
+          --title "OpenFlow $RELEASE_TAG"
+          release-assets/*

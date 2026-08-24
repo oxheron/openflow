@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=OpenFlow
+Comment=Private, local-first voice dictation
+Exec=openflow-desktop
+Icon=openflow
+Terminal=false
+Categories=Utility;AudioVideo;

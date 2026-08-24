@@ -1,0 +1,22 @@
+[Unit]
+Description=OpenFlow local inference server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=openflow
+Group=openflow
+WorkingDirectory=/opt/openflow-server
+EnvironmentFile=/etc/openflow/openflow-server.env
+ExecStart=/opt/openflow-server/bin/openflow-server
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/openflow
+
+[Install]
+WantedBy=multi-user.target

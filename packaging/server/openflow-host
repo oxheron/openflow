@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+
+usage() {
+  cat <<'USAGE'
+Usage: ./openflow-host
+
+Runs the bundled OpenFlow model server in this terminal. New clients can ask
+to pair; approve matching device names and six-digit codes with y or deny with n.
+Press Ctrl+C to stop. Paired clients and downloaded models survive restarts.
+USAGE
+}
+
+case "${1:-}" in
+  "") ;;
+  --help | -h)
+    usage
+    exit 0
+    ;;
+  *)
+    echo "error: openflow-host takes no arguments" >&2
+    usage >&2
+    exit 2
+    ;;
+esac
+
+if [[ ! -t 0 || ! -t 2 ]]; then
+  echo "error: openflow-host must run in a foreground terminal" >&2
+  echo "  use openflow-server with the documented administrator-code flow for a background service" >&2
+  exit 2
+fi
+
+# A shell can launch a job in the background while leaving its terminal file
+# descriptors attached. Refuse that case so a later approval prompt cannot
+# suspend the host with SIGTTIN.
+process_group=$(ps -o pgid= -p $$ | tr -d ' ')
+terminal_group=$(ps -o tpgid= -p $$ | tr -d ' ')
+if [[ -n "$terminal_group" && "$terminal_group" != "-1" && "$process_group" != "$terminal_group" ]]; then
+  echo "error: openflow-host must remain the foreground terminal job" >&2
+  exit 2
+fi
+
+data_root=${XDG_DATA_HOME:-"$HOME/.local/share"}
+cache_root=${XDG_CACHE_HOME:-"$HOME/.cache"}
+state_dir=${OPENFLOW_HOST_STATE_DIR:-"$data_root/openflow-server"}
+model_cache=${OPENFLOW_MODEL_CACHE:-"$cache_root/openflow/models"}
+auth_store=${OPENFLOW_AUTH_STORE:-"$state_dir/auth.json"}
+token_file="$state_dir/admin-token"
+
+mkdir -p -- "$state_dir" "$model_cache"
+chmod 700 -- "$state_dir"
+
+admin_token=${OPENFLOW_ADMIN_TOKEN:-}
+if [[ -z "$admin_token" ]]; then
+  if [[ -L "$token_file" ]]; then
+    echo "error: refusing symbolic-link administrator token: $token_file" >&2
+    exit 1
+  fi
+  if [[ ! -e "$token_file" ]]; then
+    if ! command -v openssl >/dev/null 2>&1; then
+      echo "error: openssl is required to create the initial administrator credential" >&2
+      exit 1
+    fi
+    # noclobber gives concurrent first launches an exclusive create. A losing
+    # process simply reads the credential created by the winner.
+    (umask 077; set -o noclobber; openssl rand -hex 32 >"$token_file") 2>/dev/null || true
+  fi
+  if [[ ! -f "$token_file" || -L "$token_file" ]]; then
+    echo "error: administrator credential is not a regular file: $token_file" >&2
+    exit 1
+  fi
+  chmod 600 -- "$token_file"
+  IFS= read -r admin_token <"$token_file"
+fi
+
+if (( ${#admin_token} < 24 || ${#admin_token} > 512 )) ||
+  [[ ! "$admin_token" =~ ^[A-Za-z0-9_-]+$ ]]; then
+  echo "error: administrator credential must be 24-512 URL-safe characters" >&2
+  exit 1
+fi
+
+echo "OpenFlow model host is starting in this terminal."
+echo "When a client requests access, verify its six-digit code here and answer y or n."
+echo "Press Ctrl+C to stop; models and approved devices are retained."
+
+export OPENFLOW_ADMIN_TOKEN="$admin_token"
+export OPENFLOW_MODEL_CACHE="$model_cache"
+export OPENFLOW_AUTH_STORE="$auth_store"
+export OPENFLOW_ASR_WORKER="${OPENFLOW_ASR_WORKER:-$SCRIPT_DIR/openflow-asr-worker}"
+export OPENFLOW_LLM_WORKER="${OPENFLOW_LLM_WORKER:-$SCRIPT_DIR/openflow-llm-worker}"
+export OPENFLOW_WORKER_BACKEND="${OPENFLOW_WORKER_BACKEND:-auto}"
+export OPENFLOW_INTERACTIVE_PAIRING=1
+exec "$SCRIPT_DIR/openflow-server"
