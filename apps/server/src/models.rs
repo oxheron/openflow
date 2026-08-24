@@ -376,13 +376,11 @@ impl ModelManager {
             let path = self.final_path(&spec);
             let valid_size = tokio::fs::metadata(&path)
                 .await
-                .map(|metadata| metadata.len() == spec.size_bytes)
-                .unwrap_or(false);
+                .is_ok_and(|metadata| metadata.len() == spec.size_bytes);
             let valid_digest = valid_size
                 && sha256_file(&path, None)
                     .await
-                    .map(|digest| digest.eq_ignore_ascii_case(&spec.sha256))
-                    .unwrap_or(false);
+                    .is_ok_and(|digest| digest.eq_ignore_ascii_case(&spec.sha256));
             if valid_digest {
                 if let Some(record) = self.inner.records.write().await.get_mut(&spec.id) {
                     record.state = ModelState::Ready;
@@ -417,8 +415,7 @@ impl ModelManager {
         }
         let existing = tokio::fs::metadata(&part_path)
             .await
-            .map(|metadata| metadata.len())
-            .unwrap_or(0);
+            .map_or(0, |metadata| metadata.len());
         if existing > spec.size_bytes {
             tokio::fs::remove_file(&part_path).await?;
         }
