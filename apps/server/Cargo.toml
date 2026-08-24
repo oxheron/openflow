@@ -18,7 +18,7 @@ path = "src/main.rs"
 anyhow = "1"
 async-trait = "0.1"
 axum = { version = "0.7", features = ["ws"] }
-axum-server = { version = "0.7", features = ["tls-rustls"] }
+axum-server = { version = "0.8", features = ["tls-rustls"] }
 base64 = "0.23"
 constant_time_eq = "0.5"
 dirs = "5"
