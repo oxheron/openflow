@@ -9,7 +9,7 @@ for script in "$SCRIPT_DIR"/*.sh; do
 done
 
 if command -v shellcheck >/dev/null; then
-  shellcheck "$SCRIPT_DIR"/*.sh
+  shellcheck -x "$SCRIPT_DIR"/*.sh
 else
   echo "note: shellcheck is not installed; bash syntax checks still passed" >&2
 fi

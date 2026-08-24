@@ -56,6 +56,7 @@ smoke_installed_payload() {
   local server
   local asr
   local llm
+  local sidecar_directory
   server=$(require_payload_file "$root" openflow-server)
   asr=$(require_payload_file "$root" openflow-asr-worker)
   llm=$(require_payload_file "$root" openflow-llm-worker)
@@ -65,8 +66,9 @@ smoke_installed_payload() {
       exit 1
     fi
   done
-  if [[ "$(dirname -- "$server")" != "$(dirname -- "$asr")" || \
-    "$(dirname -- "$server")" != "$(dirname -- "$llm")" ]]; then
+  sidecar_directory=$(dirname -- "$server")
+  if ! [[ "$sidecar_directory" == "$(dirname -- "$asr")" && \
+    "$sidecar_directory" == "$(dirname -- "$llm")" ]]; then
     echo "error: packaged server and workers are not sibling executables" >&2
     exit 1
   fi

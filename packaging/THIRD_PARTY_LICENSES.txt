@@ -2,7 +2,7 @@ OpenFlow third-party dependency licenses
 
 This file is generated deterministically. Do not edit it by hand.
 Cargo.lock SHA-256: e854a8f27f495bd2b85019d27b55b66c1cb6be79d8e2091982e4ccd81fe46710
-package-lock.json SHA-256: 7aec85c24dd35364e8f4656487904a554731ae4a59fac6742d008d0e791c1888
+package-lock.json SHA-256: 0e13c873d0b0bd8721d29a9f5b4da4197dff3cab0286cfb9282e241476fbaf00
 packaging/upstream.env SHA-256: 846cd1f37bedb3abf264bad76946d5975138f30cd1b6de8d43f7fe034c2c6eba
 
 The package index records every locked Cargo dependency, every production npm
@@ -650,12 +650,10 @@ npm | @tauri-apps/api | 2.11.1 | Apache-2.0 OR MIT | LICENSE_APACHE-2.0=sha256:0
 npm | @tauri-apps/plugin-clipboard-manager | 2.3.2 | MIT OR Apache-2.0 | LICENSE.spdx=sha256:9c1db6b7e7eb83e1cb2af973b5df2bdc63651ede0f38506ab98dfa0940487759
 npm | @tauri-apps/plugin-global-shortcut | 2.3.2 | MIT OR Apache-2.0 | LICENSE.spdx=sha256:9c1db6b7e7eb83e1cb2af973b5df2bdc63651ede0f38506ab98dfa0940487759
 npm | @tauri-apps/plugin-http | 2.5.9 | MIT OR Apache-2.0 | LICENSE.spdx=sha256:9c1db6b7e7eb83e1cb2af973b5df2bdc63651ede0f38506ab98dfa0940487759
-npm | js-tokens | 4.0.0 | MIT | LICENSE=sha256:2213d91c606205c71eb051a199478cdc2adde945893404d7f1421436dd6d5cc1
-npm | loose-envify | 1.4.0 | MIT | LICENSE=sha256:4eb7543b08d955a6d23fcc224601d43ff566e775be918805e26210d7f6eb4893
 npm | lucide-react | 0.468.0 | ISC | LICENSE=sha256:1e7290b35280a048667bbf0ebabac1c7fd52a75300e8b2946ac165715997f2bc
-npm | react-dom | 18.3.1 | MIT | LICENSE=sha256:52412d7bc7ce4157ea628bbaacb8829e0a9cb3c58f57f99176126bc8cf2bfc85
-npm | react | 18.3.1 | MIT | LICENSE=sha256:52412d7bc7ce4157ea628bbaacb8829e0a9cb3c58f57f99176126bc8cf2bfc85
-npm | scheduler | 0.23.2 | MIT | LICENSE=sha256:52412d7bc7ce4157ea628bbaacb8829e0a9cb3c58f57f99176126bc8cf2bfc85
+npm | react-dom | 19.2.8 | MIT | LICENSE=sha256:da6d3703ed11cbe42bd212c725957c98da23cbff1998c05fa4b3d976d1a58e93
+npm | react | 19.2.8 | MIT | LICENSE=sha256:da6d3703ed11cbe42bd212c725957c98da23cbff1998c05fa4b3d976d1a58e93
+npm | scheduler | 0.27.0 | MIT | LICENSE=sha256:da6d3703ed11cbe42bd212c725957c98da23cbff1998c05fa4b3d976d1a58e93
 
 LICENSE DOCUMENTS
 =================
@@ -3821,31 +3819,6 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ~~~~
 
---- sha256:2213d91c606205c71eb051a199478cdc2adde945893404d7f1421436dd6d5cc1 ---
-Used by: npm:js-tokens@4.0.0:LICENSE
-
-The MIT License (MIT)
-
-Copyright (c) 2014, 2015, 2016, 2017, 2018 Simon Lydell
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-
 --- sha256:2234e3cefee876aeb686ad89e978bdb07bf118a1186ab1cf161bcdf69d4b4f57 ---
 Used by: Cargo:rand_pcg@0.10.2:LICENSE-MIT
 
@@ -6993,31 +6966,6 @@ LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
 WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 
---- sha256:4eb7543b08d955a6d23fcc224601d43ff566e775be918805e26210d7f6eb4893 ---
-Used by: npm:loose-envify@1.4.0:LICENSE
-
-The MIT License (MIT)
-
-Copyright (c) 2015 Andres Suarez <zertosh@gmail.com>
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
-
 --- sha256:503558bfefe66ca15e4e3f7955b3cb0ec87fd52f29bf24b336af7bd00e946d5c ---
 Used by: Cargo:signal-hook-registry@1.4.8:LICENSE-MIT
 
@@ -7360,31 +7308,6 @@ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
-
---- sha256:52412d7bc7ce4157ea628bbaacb8829e0a9cb3c58f57f99176126bc8cf2bfc85 ---
-Used by: npm:react-dom@18.3.1:LICENSE, npm:react@18.3.1:LICENSE, npm:scheduler@0.23.2:LICENSE
-
-MIT License
-
-Copyright (c) Facebook, Inc. and its affiliates.
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
 
 --- sha256:544b3aed1fd723d0cadea567affdcfe0431e43e18d997a718f9d67256b814fde ---
 Used by: Cargo:proc-macro-error-attr@1.0.4:LICENSE-MIT, Cargo:proc-macro-error@1.0.4:LICENSE-MIT
@@ -19342,6 +19265,31 @@ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
+
+--- sha256:da6d3703ed11cbe42bd212c725957c98da23cbff1998c05fa4b3d976d1a58e93 ---
+Used by: npm:react-dom@19.2.8:LICENSE, npm:react@19.2.8:LICENSE, npm:scheduler@0.27.0:LICENSE
+
+MIT License
+
+Copyright (c) Meta Platforms, Inc. and affiliates.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
 
 --- sha256:daacc37f680c7dd0a758ac99a109f2f57d9f21d3683df9e9245055922842a695 ---
 Used by: Cargo:embed_plist@1.2.2:LICENSE-MIT

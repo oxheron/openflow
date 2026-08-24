@@ -152,9 +152,7 @@ fn detect_hardware() -> HardwareProfile {
     HardwareProfile {
         os: std::env::consts::OS.into(),
         architecture: std::env::consts::ARCH.into(),
-        logical_cpus: thread::available_parallelism()
-            .map(usize::from)
-            .unwrap_or(1),
+        logical_cpus: thread::available_parallelism().map_or(1, usize::from),
         system_memory_bytes: system_memory_bytes(),
         accelerator_memory_bytes: accelerator_memory_bytes(),
         backends,

@@ -12,10 +12,25 @@ updates:
     schedule:
       interval: weekly
     groups:
+      frontend-platform:
+        patterns:
+          - react
+          - react-dom
+          - "@types/react"
+          - "@types/react-dom"
+          - vite
+          - "@vitejs/plugin-react"
+        update-types: [major, minor, patch]
       desktop-minor:
+        exclude-patterns:
+          - react
+          - react-dom
+          - "@types/react"
+          - "@types/react-dom"
+          - vite
+          - "@vitejs/plugin-react"
         update-types: [minor, patch]
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: monthly
-
