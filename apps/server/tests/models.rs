@@ -1,6 +1,7 @@
 use openflow_protocol::{ModelRegistry, ModelState};
 use openflow_server::models::ModelManager;
 use sha2::{Digest, Sha256};
+use std::time::Duration;
 
 #[tokio::test]
 async fn bundled_registry_is_valid() {
@@ -155,13 +156,24 @@ async fn complete_partial_is_verified_and_promoted_without_an_http_request() {
         .unwrap();
     assert!(manager.start_download(&spec.id).await.unwrap());
 
-    for _ in 0..100 {
-        tokio::task::yield_now().await;
-        if matches!(manager.list().await[0].state, ModelState::Ready) {
-            break;
+    let state = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            let state = manager.list().await[0].state.clone();
+            if matches!(
+                state,
+                ModelState::Ready | ModelState::Failed { .. } | ModelState::NotDownloaded
+            ) {
+                break state;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
         }
-    }
-    assert!(matches!(manager.list().await[0].state, ModelState::Ready));
+    })
+    .await
+    .expect("model verification did not reach a terminal state");
+    assert!(
+        matches!(state, ModelState::Ready),
+        "model verification ended in {state:?}"
+    );
     assert_eq!(
         tokio::fs::read(cache.join(&spec.id).join("model.bin"))
             .await
