@@ -17,9 +17,9 @@ const repositoryRoot = resolve(scriptDirectory, "..");
 const outputPath = join(repositoryRoot, "packaging", "THIRD_PARTY_LICENSES.txt");
 const mode = process.argv[2] ?? "--check";
 
-if (!["--write", "--check", "--check-inputs"].includes(mode) || process.argv.length > 3) {
+if (!["--write", "--check"].includes(mode) || process.argv.length > 3) {
   throw new Error(
-    "usage: scripts/generate-third-party-licenses.mjs [--write|--check|--check-inputs]",
+    "usage: scripts/generate-third-party-licenses.mjs [--write|--check]",
   );
 }
 
@@ -43,7 +43,8 @@ function expectedHeader(digests) {
   return [
     "OpenFlow third-party dependency licenses",
     "",
-    "This file is generated deterministically. Do not edit it by hand.",
+    "This file is generated deterministically during verified package builds.",
+    "Do not edit it by hand.",
     `Cargo.lock SHA-256: ${digests.cargo}`,
     `package-lock.json SHA-256: ${digests.npm}`,
     `packaging/upstream.env SHA-256: ${digests.native}`,
@@ -61,12 +62,6 @@ function checkInputs() {
         "scripts/generate-third-party-licenses.mjs --write and review the result",
     );
   }
-}
-
-if (mode === "--check-inputs") {
-  checkInputs();
-  process.stdout.write("Third-party license input digests are current\n");
-  process.exit(0);
 }
 
 const licenseName = /^(license|licence|copying|copyright|notice)([-_.].*)?$/i;
@@ -359,7 +354,7 @@ function render(packages) {
     expectedHeader(inputDigests()),
     "",
     "The package index records every locked Cargo dependency, every production npm",
-    "dependency, and the two statically linked native inference runtimes. Exact duplicate",
+    "dependency, and any native inference runtimes linked by this build. Exact duplicate",
     "license documents are stored once and referenced by SHA-256.",
     "",
     "PACKAGE INDEX",
@@ -392,7 +387,7 @@ function render(packages) {
 const packages = [];
 collectCargo(packages);
 collectNpm(packages);
-collectNative(packages);
+if (process.env.OPENFLOW_NATIVE_MOCK !== "1") collectNative(packages);
 const generated = render(packages);
 
 if (mode === "--write") {

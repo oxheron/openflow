@@ -1,4 +1,4 @@
-.PHONY: check fmt test-layout rust integration-workers native desktop release-lint installers arch-bundle
+.PHONY: check fmt test-layout rust integration-workers native desktop release-lint licenses installers arch-bundle
 
 check: test-layout rust native desktop
 
@@ -29,6 +29,12 @@ desktop:
 
 release-lint:
 	./scripts/lint-release.sh
+
+licenses:
+	npm --prefix apps/desktop ci --ignore-scripts
+	./scripts/fetch-inference-sources.sh
+	./scripts/generate-third-party-licenses.mjs --write
+	./scripts/generate-third-party-licenses.mjs --check
 
 installers:
 	./scripts/build-installers.sh

@@ -69,6 +69,11 @@ jobs:
         run: |
           ./scripts/verify-version.sh "$RELEASE_TAG"
           ./scripts/lint-release.sh
+      - name: Generate and validate dependency licenses
+        run: |
+          ./scripts/fetch-inference-sources.sh
+          ./scripts/generate-third-party-licenses.mjs --write
+          ./scripts/generate-third-party-licenses.mjs --check
 
   build-linux:
     needs: validate

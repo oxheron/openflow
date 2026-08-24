@@ -19,6 +19,10 @@ The full source and license text for the linked projects are available from:
 - https://huggingface.co/Qwen
 
 This notice does not replace the license files supplied by those projects.
+Verified package builds also generate `THIRD_PARTY_LICENSES.txt`, containing the
+locked Cargo, production npm, and linked native dependency inventory together
+with the corresponding license texts. Installer creation fails if that
+aggregate cannot be generated or verified.
 
 ## MIT License used by whisper.cpp and llama.cpp
 

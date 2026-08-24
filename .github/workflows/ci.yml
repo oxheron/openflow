@@ -66,10 +66,19 @@ jobs:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
+          cache-dependency-path: apps/desktop/package-lock.json
       - name: Install shellcheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
       - run: ./scripts/verify-test-layout.sh
       - run: ./scripts/lint-release.sh
+      - name: Generate and validate dependency licenses
+        run: |
+          npm --prefix apps/desktop ci --omit=dev --ignore-scripts
+          ./scripts/fetch-inference-sources.sh
+          ./scripts/generate-third-party-licenses.mjs --write
+          ./scripts/generate-third-party-licenses.mjs --check

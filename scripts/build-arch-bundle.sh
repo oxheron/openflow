@@ -108,6 +108,7 @@ if [[ "${OPENFLOW_NATIVE_MOCK:-0}" == 1 ]]; then
   echo "error: Arch user bundles cannot be built with mock inference workers" >&2
   exit 2
 fi
+"$SCRIPT_DIR/generate-third-party-licenses.mjs" --write
 "$SCRIPT_DIR/generate-third-party-licenses.mjs" --check
 npm --prefix "$REPOSITORY_ROOT/apps/desktop" run build
 cargo build --locked --release --target "$TARGET_TRIPLE" -p openflow-desktop
