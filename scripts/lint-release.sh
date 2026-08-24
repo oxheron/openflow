@@ -18,7 +18,17 @@ node -e \
   "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8'))" \
   "$REPOSITORY_ROOT/packaging/tauri.release.conf.json"
 "$SCRIPT_DIR/verify-version.sh"
-"$SCRIPT_DIR/generate-third-party-licenses.mjs" --check-inputs
+node --check "$SCRIPT_DIR/generate-third-party-licenses.mjs"
+if ! grep -Fxq '/packaging/THIRD_PARTY_LICENSES.txt' "$REPOSITORY_ROOT/.gitignore"; then
+  echo "error: the generated third-party license aggregate must remain ignored" >&2
+  exit 1
+fi
+if [[ -e "$REPOSITORY_ROOT/packaging/THIRD_PARTY_LICENSES.txt" ]] &&
+  git -C "$REPOSITORY_ROOT" ls-files --error-unmatch \
+    packaging/THIRD_PARTY_LICENSES.txt >/dev/null 2>&1; then
+  echo "error: the generated third-party license aggregate must not be tracked" >&2
+  exit 1
+fi
 
 if ! grep -Eq '^OPENFLOW_WHISPER_CPP_REVISION=[0-9a-f]{40}$' "$REPOSITORY_ROOT/packaging/upstream.env" ||
   ! grep -Eq '^OPENFLOW_LLAMA_CPP_REVISION=[0-9a-f]{40}$' "$REPOSITORY_ROOT/packaging/upstream.env"; then

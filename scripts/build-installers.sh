@@ -68,11 +68,8 @@ fi
 "$SCRIPT_DIR/stage-sidecars.sh" "$TARGET_TRIPLE"
 "$SCRIPT_DIR/verify-version.sh"
 npm --prefix "$REPOSITORY_ROOT/apps/desktop" ci
-if [[ "${OPENFLOW_NATIVE_MOCK:-0}" == 1 ]]; then
-  "$SCRIPT_DIR/generate-third-party-licenses.mjs" --check-inputs
-else
-  "$SCRIPT_DIR/generate-third-party-licenses.mjs" --check
-fi
+"$SCRIPT_DIR/generate-third-party-licenses.mjs" --write
+"$SCRIPT_DIR/generate-third-party-licenses.mjs" --check
 
 (
   cd "$REPOSITORY_ROOT/apps/desktop"

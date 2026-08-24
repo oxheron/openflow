@@ -4,6 +4,7 @@
 **/dist/
 **/.vite/
 **/build/
+/native/build-*/
 **/.cache/
 **/__pycache__/
 *.pyc
@@ -14,6 +15,7 @@
 /apps/desktop/src-tauri/binaries/*
 !/apps/desktop/src-tauri/binaries/.gitkeep
 /dist/release/
+/packaging/THIRD_PARTY_LICENSES.txt
 .DS_Store
 *.log
 .env

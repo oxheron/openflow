@@ -16,3 +16,7 @@ this repository invariant.
 Use conventional, focused commits. Document security-relevant behavior changes
 in `docs/security.md` and include a regression test for every bug involving a
 target range, authentication decision, model checksum, or stale revision.
+
+`packaging/THIRD_PARTY_LICENSES.txt` is a generated, ignored build artifact.
+Do not commit it after dependency updates. Run `make licenses` to reproduce the
+same locked-dependency license validation used by CI and release packaging.
