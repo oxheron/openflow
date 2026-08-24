@@ -35,11 +35,14 @@ fi
 # A shell can launch a job in the background while leaving its terminal file
 # descriptors attached. Refuse that case so a later approval prompt cannot
 # suspend the host with SIGTTIN.
-process_group=$(ps -o pgid= -p $$ | tr -d ' ')
-terminal_group=$(ps -o tpgid= -p $$ | tr -d ' ')
-if [[ -n "$terminal_group" && "$terminal_group" != "-1" && "$process_group" != "$terminal_group" ]]; then
-  echo "error: openflow-host must remain the foreground terminal job" >&2
-  exit 2
+if process_group=$(ps -o pgid= -p $$ 2>/dev/null) &&
+  terminal_group=$(ps -o tpgid= -p $$ 2>/dev/null); then
+  process_group=${process_group//[[:space:]]/}
+  terminal_group=${terminal_group//[[:space:]]/}
+  if [[ -n "$terminal_group" && "$terminal_group" != "-1" && "$process_group" != "$terminal_group" ]]; then
+    echo "error: openflow-host must remain the foreground terminal job" >&2
+    exit 2
+  fi
 fi
 
 data_root=${XDG_DATA_HOME:-"$HOME/.local/share"}
@@ -59,13 +62,20 @@ if [[ -z "$admin_token" ]]; then
     exit 1
   fi
   if [[ ! -e "$token_file" ]]; then
-    if ! command -v openssl >/dev/null 2>&1; then
-      echo "error: openssl is required to create the initial administrator credential" >&2
-      exit 1
-    fi
     # noclobber gives concurrent first launches an exclusive create. A losing
     # process simply reads the credential created by the winner.
-    (umask 077; set -o noclobber; openssl rand -hex 32 >"$token_file") 2>/dev/null || true
+    if command -v openssl >/dev/null 2>&1; then
+      (umask 077; set -o noclobber; openssl rand -hex 32 >"$token_file") 2>/dev/null || true
+    elif command -v od >/dev/null 2>&1; then
+      (
+        umask 077
+        set -o noclobber
+        { od -An -N32 -tx1 /dev/urandom | tr -d ' \n'; printf '\n'; } >"$token_file"
+      ) 2>/dev/null || true
+    else
+      echo "error: either openssl or od is required to create the administrator credential" >&2
+      exit 1
+    fi
   fi
   if [[ ! -f "$token_file" || -L "$token_file" ]]; then
     echo "error: administrator credential is not a regular file: $token_file" >&2

@@ -7,7 +7,8 @@ clipboard, and accessibility privileges; this server has no keyboard API.
 For an interactive, unprivileged host, run `bin/openflow-host` in a foreground
 terminal. It creates a private administrator credential and durable user cache,
 then lets clients request access with a device name and six-digit comparison
-code. The four executables must remain together.
+code. It requires Bash and a normal Linux userland (`openssl` or `od` supplies
+secure randomness). The four executables must remain together.
 
 For a customized foreground host, copy `openflow-server.env.example`, adjust its
 data paths to directories you own, export those variables, and run
