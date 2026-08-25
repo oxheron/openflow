@@ -1,8 +1,14 @@
 class OpenFlowPcmCapture extends AudioWorkletProcessor {
-  constructor() {
+  constructor(options) {
     super();
     this.targetRate = 16000;
-    this.ratio = sampleRate / this.targetRate;
+    const configuredInputRate = options?.processorOptions?.inputSampleRate;
+    this.inputRate =
+      Number.isFinite(configuredInputRate) && configuredInputRate > 0 ? configuredInputRate : sampleRate;
+    this.ratio = this.inputRate / this.targetRate;
+    // Fewer, larger WebSocket messages keep capture independent of inference
+    // latency while retaining 100 ms resolution for the client-side VAD.
+    this.frameSamples = 1600;
     this.readPosition = 0;
     this.source = [];
     this.output = [];
@@ -26,12 +32,14 @@ class OpenFlowPcmCapture extends AudioWorkletProcessor {
       this.output.push(this.source[left] * (1 - mix) + this.source[left + 1] * mix);
       this.readPosition += this.ratio;
 
-      if (this.output.length === 320) {
+      if (this.output.length === this.frameSamples) {
         this.emitOutput();
       }
     }
 
-    const consumed = Math.floor(this.readPosition);
+    // Keep the last source sample for interpolation with the next render
+    // quantum. `readPosition` can advance beyond the current source array.
+    const consumed = Math.min(Math.floor(this.readPosition), Math.max(0, this.source.length - 1));
     if (consumed > 0) {
       this.source.splice(0, consumed);
       this.readPosition -= consumed;

@@ -82,7 +82,10 @@ impl ServerConfig {
             // 60 seconds of 16 kHz mono PCM S16LE. This also keeps the
             // JSON-expanded native worker frame below its 16 MiB ceiling.
             max_audio_bytes_per_session: 60 * 16_000 * 2,
-            partial_decode_bytes: 16_000,
+            // Decode a rolling partial every two seconds of PCM. Whisper works
+            // on a much larger internal window, so decoding every 500 ms adds
+            // substantial GPU work without useful transcript stability.
+            partial_decode_bytes: 2 * 16_000 * 2,
             asr_worker_path: env::var_os("OPENFLOW_ASR_WORKER").map(PathBuf::from),
             llm_worker_path: env::var_os("OPENFLOW_LLM_WORKER").map(PathBuf::from),
             worker_backend: env::var("OPENFLOW_WORKER_BACKEND").unwrap_or_else(|_| "auto".into()),

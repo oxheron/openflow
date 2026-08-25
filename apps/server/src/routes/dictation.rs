@@ -27,7 +27,10 @@ use tokio::{
 use uuid::Uuid;
 
 const MAX_WEBSOCKET_MESSAGE_BYTES: usize = 64 * 1024;
-const INBOUND_QUEUE_CAPACITY: usize = 512;
+// Audio bytes have their own strict semaphore budget below. This event count
+// accommodates a complete byte-bounded session even when a WebView emits small
+// PCM messages while a comparatively slow partial Whisper decode is running.
+const INBOUND_QUEUE_CAPACITY: usize = 4_096;
 const OUTBOUND_QUEUE_CAPACITY: usize = 32;
 const MAX_QUEUED_AUDIO_BYTES: usize = 2 * 1024 * 1024;
 const SESSION_CLEANUP_TIMEOUT: Duration = Duration::from_secs(10);
