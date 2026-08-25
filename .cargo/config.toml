@@ -1,0 +1,5 @@
+[env]
+# The macOS accessibility bridge declares macOS 13 as its minimum. Setting the
+# deployment target at Cargo startup keeps Rust, C, and Swift objects aligned.
+# An explicit caller value still wins, which is useful for newer-only builds.
+MACOSX_DEPLOYMENT_TARGET = { value = "13.0", force = false }
