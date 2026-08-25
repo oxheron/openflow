@@ -1,23 +1,11 @@
-import {
-  CheckCircle2,
-  Clipboard,
-  Command,
-  Eye,
-  Info,
-  Keyboard,
-  Languages,
-  LoaderCircle,
-  RotateCcw,
-  ShieldAlert,
-} from "lucide-react";
+import { Clipboard, Command, Eye, Info, Keyboard, Languages, RotateCcw, ShieldAlert } from "lucide-react";
 import type { DesktopSettings } from "../domain/settings";
 import type { PlatformCapabilities } from "../lib/bridge";
-import type { HotkeyRegistrationState } from "../lib/hotkeyRegistration";
 
 interface PreferencesPanelProps {
   settings: DesktopSettings;
   platform: PlatformCapabilities | null;
-  hotkeyRegistration: HotkeyRegistrationState;
+  hotkeyError: string | null;
   onSettingsChange: (settings: DesktopSettings) => void;
   onReset: () => void;
 }
@@ -48,7 +36,7 @@ function Toggle({
 export function PreferencesPanel({
   settings,
   platform,
-  hotkeyRegistration,
+  hotkeyError,
   onSettingsChange,
   onReset,
 }: PreferencesPanelProps) {
@@ -85,32 +73,13 @@ export function PreferencesPanel({
             />
           </div>
           <small>Use Tauri accelerator syntax, for example CommandOrControl+Shift+Space.</small>
-          <small>Recognizing a global shortcut does not require macOS Accessibility permission.</small>
         </label>
-        {hotkeyRegistration.status === "registering" && (
-          <div className="inline-alert" role="status" aria-live="polite">
-            <LoaderCircle className="spin" size={16} />
-            <div>
-              <strong>Shortcut registering</strong>
-              <span>OpenFlow is requesting the global shortcut from macOS.</span>
-            </div>
-          </div>
-        )}
-        {hotkeyRegistration.status === "active" && (
-          <div className="inline-alert success" role="status" aria-live="polite">
-            <CheckCircle2 size={16} />
-            <div>
-              <strong>Shortcut active</strong>
-              <span>{settings.hotkey} is registered globally.</span>
-            </div>
-          </div>
-        )}
-        {hotkeyRegistration.status === "failed" && (
+        {hotkeyError && (
           <div className="inline-alert danger">
             <ShieldAlert size={16} />
             <div>
-              <strong>Shortcut registration failed</strong>
-              <span>{hotkeyRegistration.error}</span>
+              <strong>Shortcut unavailable</strong>
+              <span>{hotkeyError}</span>
             </div>
           </div>
         )}
