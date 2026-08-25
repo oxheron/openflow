@@ -19,7 +19,22 @@ struct WordEvidence {
   bool protected_text{false};
 };
 
-enum class EditKind { kFormatting, kAdjacentDuplicate, kLexical };
+enum class EditKind {
+  kFormatting,
+  kAdjacentDuplicate,
+  kLexical,
+  kWordBoundary,
+  kOrthographicNormalization,
+  kCanonicalName,
+  kSpokenSymbol,
+};
+
+enum class NormalizationGrounding {
+  kLexicalSkeleton,
+  kPhoneticEquivalence,
+  kCanonicalAlias,
+  kSpokenSymbol,
+};
 
 struct EditCandidate {
   std::size_t start_byte{0};
@@ -48,6 +63,11 @@ struct EditDecision {
   double llm_advantage_nats_per_token{0.0};
 };
 
+struct NormalizationValidation {
+  bool valid{false};
+  std::string reason;
+};
+
 [[nodiscard]] std::vector<WordEvidence> aggregate_word_confidence(
     const std::vector<TokenEvidence>& tokens);
 [[nodiscard]] bool looks_protected(const std::string& text);
@@ -63,5 +83,13 @@ struct EditDecision {
                                       std::vector<EditCandidate> accepted_edits);
 [[nodiscard]] const char* edit_kind_name(EditKind kind);
 [[nodiscard]] EditKind parse_edit_kind(const std::string& value);
+[[nodiscard]] const char* normalization_grounding_name(NormalizationGrounding grounding);
+[[nodiscard]] NormalizationGrounding parse_normalization_grounding(const std::string& value);
+// Normalization proposals are untrusted local suggestions. This validates their
+// structural and declared-grounding constraints; it does not prove semantic or
+// phonetic equivalence and does not apply the edit.
+[[nodiscard]] NormalizationValidation validate_normalization_proposal(
+    const std::string& transcript, const EditCandidate& candidate,
+    NormalizationGrounding grounding);
 
 }  // namespace openflow::inference

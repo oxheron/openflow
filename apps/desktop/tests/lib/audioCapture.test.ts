@@ -11,7 +11,7 @@ describe("SpeechBoundaryDetector", () => {
   it("commits after speech followed by sustained silence", () => {
     const detector = new SpeechBoundaryDetector();
     for (let index = 0; index < 12; index += 1) expect(detector.process(pcm(5000))).toBe(false);
-    for (let index = 0; index < 44; index += 1) expect(detector.process(pcm(0))).toBe(false);
+    for (let index = 0; index < 34; index += 1) expect(detector.process(pcm(0))).toBe(false);
     expect(detector.process(pcm(0))).toBe(true);
   });
 
@@ -26,7 +26,7 @@ describe("SpeechBoundaryDetector", () => {
     const detector = new SpeechBoundaryDetector();
     expect(detector.process(pcm(5000, 1600))).toBe(false);
     expect(detector.process(pcm(5000, 1600))).toBe(false);
-    for (let index = 0; index < 8; index += 1) {
+    for (let index = 0; index < 6; index += 1) {
       expect(detector.process(pcm(0, 1600))).toBe(false);
     }
     expect(detector.process(pcm(0, 1600))).toBe(true);

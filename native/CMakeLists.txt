@@ -8,6 +8,12 @@ option(OPENFLOW_ENABLE_LLAMA_CPP "Build the llama.cpp scoring adapter" OFF)
 set(OPENFLOW_WHISPER_CPP_DIR "" CACHE PATH "Path to a whisper.cpp checkout")
 set(OPENFLOW_LLAMA_CPP_DIR "" CACHE PATH "Path to a llama.cpp checkout")
 
+if(OPENFLOW_ENABLE_WHISPER_CPP AND OPENFLOW_ENABLE_LLAMA_CPP)
+  message(FATAL_ERROR
+    "Build the Whisper and llama adapters in separate CMake directories; "
+    "their pinned upstreams carry incompatible ggml revisions.")
+endif()
+
 function(openflow_target_defaults target)
   target_compile_features(${target} PUBLIC cxx_std_17)
   if(MSVC)
@@ -37,6 +43,13 @@ openflow_target_defaults(openflow-asr-worker)
 if(OPENFLOW_ENABLE_WHISPER_CPP)
   if(NOT OPENFLOW_WHISPER_CPP_DIR OR NOT EXISTS "${OPENFLOW_WHISPER_CPP_DIR}/CMakeLists.txt")
     message(FATAL_ERROR "OPENFLOW_ENABLE_WHISPER_CPP requires OPENFLOW_WHISPER_CPP_DIR")
+  endif()
+  file(READ "${OPENFLOW_WHISPER_CPP_DIR}/include/whisper.h" OPENFLOW_WHISPER_HEADER)
+  string(FIND "${OPENFLOW_WHISPER_HEADER}" "whisper_nbest_callback" OPENFLOW_WHISPER_NBEST_API)
+  if(OPENFLOW_WHISPER_NBEST_API EQUAL -1)
+    message(FATAL_ERROR
+      "The whisper.cpp checkout is missing OpenFlow's reviewed N-best patch. "
+      "Apply packaging/patches/whisper.cpp-v1.9.1-nbest.patch to the pinned v1.9.1 source.")
   endif()
   set(WHISPER_BUILD_TESTS OFF CACHE BOOL "" FORCE)
   set(WHISPER_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)

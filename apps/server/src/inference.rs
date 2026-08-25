@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64_STANDARD};
 use openflow_protocol::{
-    AudioEncoding, CleanupEdit, ComputeBackend, ModelKind, TokenEvidence, TranscriptionRequest,
-    TranscriptionResult,
+    AudioEncoding, ComputeBackend, ModelKind, TokenEvidence, TranscriptHypothesis,
+    TranscriptionRequest, TranscriptionResult,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -60,9 +60,73 @@ pub trait InferenceEngine: Send + Sync + 'static {
         request: TranscriptionRequest,
     ) -> Result<TranscriptionResult, ServerError>;
 
+    /// Ranks a finite set of ASR-supported alternatives with the optional
+    /// language model. Implementations without a language model return `None`.
+    async fn rank_candidates(
+        &self,
+        _request: CandidateRankingRequest,
+    ) -> Result<Option<CandidateRankingResult>, ServerError> {
+        Ok(None)
+    }
+
     /// Releases backend state belonging to a session that ended without a
     /// final segment (for example, because its WebSocket disconnected).
     async fn cancel_session(&self, _session_id: Uuid) {}
+}
+
+#[derive(Clone, Debug)]
+pub struct CandidateRankingRequest {
+    pub session_id: Uuid,
+    pub left_context: String,
+    pub right_context: String,
+    pub candidates: Vec<LanguageCandidate>,
+    pub propose_normalizations: bool,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct LanguageCandidate {
+    pub id: String,
+    pub text: String,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq)]
+pub struct LanguageCandidateScore {
+    pub id: String,
+    pub log_probability: f64,
+    pub token_count: usize,
+    pub mean_log_probability: f64,
+    pub candidate_log_probability: f64,
+    pub right_context_log_probability_delta: f64,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Eq)]
+pub struct NormalizationProposal {
+    pub start_byte: usize,
+    pub end_byte: usize,
+    pub source: String,
+    pub replacement: String,
+    pub kind: String,
+    pub grounding: String,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct CandidateNormalization {
+    candidate_id: String,
+    #[serde(default)]
+    proposals: Vec<NormalizationProposal>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct WorkerCandidateRankingResult {
+    rankings: Vec<LanguageCandidateScore>,
+    normalization: Option<CandidateNormalization>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CandidateRankingResult {
+    pub rankings: Vec<LanguageCandidateScore>,
+    pub normalization_candidate_id: Option<String>,
+    pub normalization_proposals: Vec<NormalizationProposal>,
 }
 
 #[derive(Debug)]
@@ -454,6 +518,21 @@ struct AsrResult {
     tokens: Vec<AsrToken>,
     #[serde(default)]
     segments: Vec<AsrSegment>,
+    #[serde(default)]
+    hypotheses: Vec<AsrHypothesis>,
+}
+
+#[derive(Deserialize)]
+struct AsrHypothesis {
+    text: String,
+    #[serde(default)]
+    score: f32,
+    #[serde(default)]
+    mean_log_probability: f32,
+    #[serde(default)]
+    tokens: Vec<AsrToken>,
+    #[serde(default)]
+    segments: Vec<AsrSegment>,
 }
 
 #[derive(Deserialize)]
@@ -468,6 +547,40 @@ struct AsrSegment {
     end_ms: u64,
     #[serde(default)]
     tokens: Vec<AsrToken>,
+}
+
+fn asr_token_evidence(flat_tokens: Vec<AsrToken>, segments: Vec<AsrSegment>) -> Vec<TokenEvidence> {
+    if segments.is_empty() {
+        return flat_tokens
+            .into_iter()
+            .map(|token| TokenEvidence {
+                text: token.text,
+                start_ms: 0,
+                end_ms: 0,
+                probability: token.probability.clamp(0.0, 1.0),
+            })
+            .collect();
+    }
+    segments
+        .into_iter()
+        .flat_map(|segment| {
+            let token_count = segment.tokens.len().max(1) as u64;
+            let duration = segment.end_ms.saturating_sub(segment.start_ms);
+            segment
+                .tokens
+                .into_iter()
+                .enumerate()
+                .map(move |(index, token)| {
+                    let index = index as u64;
+                    TokenEvidence {
+                        text: token.text,
+                        start_ms: segment.start_ms + duration * index / token_count,
+                        end_ms: segment.start_ms + duration * (index + 1) / token_count,
+                        probability: token.probability.clamp(0.0, 1.0),
+                    }
+                })
+        })
+        .collect()
 }
 
 impl WorkerInferenceEngine {
@@ -606,6 +719,48 @@ impl WorkerInferenceEngine {
         }
     }
 
+    async fn rank_candidates_once(
+        &self,
+        request: &CandidateRankingRequest,
+        state: &mut WorkerEngineState,
+    ) -> Result<Option<CandidateRankingResult>, ServerError> {
+        let Some(llm) = &self.llm else {
+            return Ok(None);
+        };
+        if state.loaded_llm.is_none() {
+            return Ok(None);
+        }
+        let worker_session = state.sessions.entry(request.session_id).or_default();
+        if !worker_session.llm_started {
+            llm.call("start_session", json!({"session_id": request.session_id}))
+                .await?;
+            worker_session.llm_started = true;
+        }
+        let response = llm
+            .call(
+                "rank_candidates",
+                json!({
+                    "session_id": request.session_id,
+                    "left_context": request.left_context,
+                    "right_context": request.right_context,
+                    "candidates": request.candidates,
+                    "propose_normalizations": request.propose_normalizations,
+                }),
+            )
+            .await?;
+        let result: WorkerCandidateRankingResult = serde_json::from_value(response)?;
+        let (normalization_candidate_id, normalization_proposals) =
+            result.normalization.map_or_else(
+                || (None, Vec::new()),
+                |normalization| (Some(normalization.candidate_id), normalization.proposals),
+            );
+        Ok(Some(CandidateRankingResult {
+            rankings: result.rankings,
+            normalization_candidate_id,
+            normalization_proposals,
+        }))
+    }
+
     #[allow(clippy::too_many_lines)]
     async fn transcribe_once(
         &self,
@@ -650,8 +805,8 @@ impl WorkerInferenceEngine {
             worker_session.asr_started = true;
         }
 
-        // Native ASR calls are intentionally stateless decodes: every rolling
-        // request contains the complete current segment so revisions are stable.
+        // Native ASR calls are intentionally stateless decodes. The route sends
+        // the complete bounded rolling window plus a short committed prompt.
         let samples_s16le_base64 = pcm_s16le_base64(request.config.audio_encoding, &request.audio)?;
         let response = self
             .asr
@@ -661,6 +816,7 @@ impl WorkerInferenceEngine {
                     "session_id": request.config.session_id,
                     "final": request.final_segment,
                     "samples_s16le_base64": samples_s16le_base64,
+                    "initial_prompt": asr_prompt(request),
                 }),
             )
             .await?;
@@ -668,102 +824,23 @@ impl WorkerInferenceEngine {
         if request.final_segment && self.print_transcripts {
             print_raw_transcript(request.config.session_id, request.segment_id, &asr.text);
         }
-        let tokens: Vec<TokenEvidence> = if asr.segments.is_empty() {
-            asr.tokens
-                .into_iter()
-                .map(|token| TokenEvidence {
-                    text: token.text,
-                    start_ms: 0,
-                    end_ms: 0,
-                    probability: token.probability.clamp(0.0, 1.0),
-                })
-                .collect()
-        } else {
-            asr.segments
-                .into_iter()
-                .flat_map(|segment| {
-                    let token_count = segment.tokens.len().max(1) as u64;
-                    let duration = segment.end_ms.saturating_sub(segment.start_ms);
-                    segment
-                        .tokens
-                        .into_iter()
-                        .enumerate()
-                        .map(move |(index, token)| {
-                            let index = index as u64;
-                            TokenEvidence {
-                                text: token.text,
-                                start_ms: segment.start_ms + duration * index / token_count,
-                                end_ms: segment.start_ms + duration * (index + 1) / token_count,
-                                probability: token.probability.clamp(0.0, 1.0),
-                            }
-                        })
-                })
-                .collect()
-        };
+        let tokens = asr_token_evidence(asr.tokens, asr.segments);
+        let hypotheses = asr
+            .hypotheses
+            .into_iter()
+            .map(|hypothesis| TranscriptHypothesis {
+                text: hypothesis.text,
+                score: hypothesis.score,
+                mean_log_probability: hypothesis.mean_log_probability,
+                tokens: asr_token_evidence(hypothesis.tokens, hypothesis.segments),
+            })
+            .collect();
 
-        let (formatted_text, edits) = if request.final_segment {
-            if let (Some(llm), Some(_)) = (&self.llm, llm_model) {
-                let cleanup: Result<Value, ServerError> = async {
-                    if !worker_session.llm_started {
-                        llm.call(
-                            "start_session",
-                            json!({"session_id": request.config.session_id}),
-                        )
-                        .await?;
-                        worker_session.llm_started = true;
-                    }
-                    let mut cleanup_params = json!({
-                        "session_id": request.config.session_id,
-                        "text": asr.text,
-                    });
-                    let reconstructed: String =
-                        tokens.iter().map(|token| token.text.as_str()).collect();
-                    if reconstructed == asr.text {
-                        cleanup_params.as_object_mut().expect("JSON object").insert(
-                            "tokens".into(),
-                            json!(
-                                tokens
-                                    .iter()
-                                    .map(|token| json!({
-                                        "text": token.text,
-                                        "probability": token.probability,
-                                    }))
-                                    .collect::<Vec<_>>()
-                            ),
-                        );
-                    } else {
-                        // A backend with token text that does not exactly reconstruct
-                        // the transcript cannot safely associate probability evidence
-                        // with byte ranges. Omitting evidence makes lexical edits fail
-                        // closed while still allowing independently safe formatting.
-                        tracing::warn!(
-                            session_id = %request.config.session_id,
-                            "ASR token evidence did not reconstruct the transcript; lexical cleanup is disabled for this segment"
-                        );
-                    }
-                    llm.call("cleanup", cleanup_params).await
-                }
-                .await;
-                match cleanup {
-                    Ok(value) => parse_cleanup(&value, &asr.text),
-                    Err(error) if is_worker_transport_failure(&error) => return Err(error),
-                    Err(error) => {
-                        // Cleanup must never make an otherwise valid dictation
-                        // unavailable. Raw ASR remains the safe fallback.
-                        tracing::warn!(
-                            session_id = %request.config.session_id,
-                            %error,
-                            "text cleanup failed; returning the raw transcript"
-                        );
-                        (asr.text.clone(), Vec::new())
-                    }
-                }
-            } else {
-                (asr.text.clone(), Vec::new())
-            }
-        } else {
-            (asr.text.clone(), Vec::new())
-        };
+        // Freeform transcript cleanup is intentionally not performed here.
+        // The route layer may ask the LLM to rank only ASR-supported
+        // alternatives and to return exact-span surface normalizations.
+        let formatted_text = asr.text.clone();
+        let edits = Vec::new();
 
         if request.final_segment && self.print_transcripts {
             print_cleanup_result(
@@ -774,53 +851,35 @@ impl WorkerInferenceEngine {
             );
         }
 
-        if request.final_segment {
-            let llm_started = worker_session.llm_started;
-            if let Err(error) = self
-                .asr
-                .call(
-                    "end_session",
-                    json!({"session_id": request.config.session_id}),
-                )
-                .await
-            {
-                tracing::warn!(
-                    session_id = %request.config.session_id,
-                    %error,
-                    "ASR session teardown failed after a completed transcript"
-                );
-                if is_worker_transport_failure(&error) {
-                    state.loaded_asr = None;
-                }
-            }
-            if llm_started
-                && let Some(llm) = &self.llm
-                && let Err(error) = llm
-                    .call(
-                        "end_session",
-                        json!({"session_id": request.config.session_id}),
-                    )
-                    .await
-            {
-                tracing::warn!(
-                    session_id = %request.config.session_id,
-                    %error,
-                    "LLM session teardown failed after a completed transcript"
-                );
-                if is_worker_transport_failure(&error) {
-                    state.loaded_llm = None;
-                }
-            }
-            state.sessions.remove(&request.config.session_id);
-        }
-
         Ok(TranscriptionResult {
             raw_text: asr.text,
             formatted_text,
             tokens,
             edits,
+            hypotheses,
         })
     }
+}
+
+fn asr_prompt(request: &TranscriptionRequest) -> String {
+    let mut parts = Vec::new();
+    if let Some(context) = request
+        .prompt_context
+        .as_deref()
+        .map(str::trim)
+        .filter(|context| !context.is_empty())
+    {
+        parts.push(context);
+    }
+    parts.extend(
+        request
+            .config
+            .glossary
+            .iter()
+            .map(String::as_str)
+            .filter(|entry| !entry.trim().is_empty()),
+    );
+    parts.join(", ")
 }
 
 #[async_trait]
@@ -882,6 +941,22 @@ impl InferenceEngine for WorkerInferenceEngine {
             return self.transcribe_once(&request, &mut state).await;
         }
         first
+    }
+
+    async fn rank_candidates(
+        &self,
+        request: CandidateRankingRequest,
+    ) -> Result<Option<CandidateRankingResult>, ServerError> {
+        let mut state = self.state.lock().await;
+        let result = self.rank_candidates_once(&request, &mut state).await;
+        if result.as_ref().is_err_and(is_worker_transport_failure) {
+            // The next transcription call reloads the configured model pair.
+            // Candidate ranking is optional and must not manufacture a result
+            // after its language worker has lost state.
+            state.loaded_llm = None;
+            state.sessions.remove(&request.session_id);
+        }
+        result
     }
 
     async fn cancel_session(&self, session_id: Uuid) {
@@ -1009,7 +1084,7 @@ pub fn pcm_s16le_diagnostics(bytes: &[u8]) -> PcmDiagnostics {
     let mut sample_count = 0_usize;
     let mut nonzero_count_f64 = 0.0_f64;
     let mut sample_count_f64 = 0.0_f64;
-    for bytes in bytes.chunks_exact(2) {
+    for bytes in bytes.as_chunks::<2>().0 {
         let sample = f64::from(i16::from_le_bytes([bytes[0], bytes[1]])) / 32768.0;
         square_sum += sample * sample;
         peak = peak.max(sample.abs());
@@ -1058,61 +1133,4 @@ pub fn pcm_s16le_base64(encoding: AudioEncoding, bytes: &[u8]) -> Result<String,
             "the native adapter currently requires PCM S16LE audio".into(),
         )),
     }
-}
-
-fn parse_cleanup(value: &Value, original: &str) -> (String, Vec<CleanupEdit>) {
-    let text = value
-        .get("formatted_text")
-        .or_else(|| value.get("text"))
-        .and_then(Value::as_str)
-        .unwrap_or(original)
-        .to_owned();
-    let edits = value
-        .get("decisions")
-        .and_then(Value::as_array)
-        .map(|decisions| {
-            decisions
-                .iter()
-                .filter(|decision| {
-                    decision
-                        .get("accepted")
-                        .and_then(Value::as_bool)
-                        .unwrap_or(false)
-                })
-                .filter_map(|decision| {
-                    let edit = decision.get("edit")?;
-                    let start_byte = usize::try_from(edit.get("start_byte")?.as_u64()?).ok()?;
-                    let end_byte = usize::try_from(edit.get("end_byte")?.as_u64()?).ok()?;
-                    let source_confidence = finite_f32(
-                        decision
-                            .get("source_confidence")
-                            .and_then(Value::as_f64)
-                            .unwrap_or(0.0),
-                    )?;
-                    Some(CleanupEdit {
-                        start_byte,
-                        end_byte,
-                        replacement: edit.get("replacement")?.as_str()?.into(),
-                        reason: decision
-                            .get("reason")
-                            .and_then(Value::as_str)
-                            .unwrap_or("accepted")
-                            .into(),
-                        source_confidence,
-                        score_delta_per_token: decision
-                            .get("llm_advantage_nats_per_token")
-                            .and_then(Value::as_f64)
-                            .and_then(finite_f32),
-                    })
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    (text, edits)
-}
-
-#[allow(clippy::cast_possible_truncation)]
-fn finite_f32(value: f64) -> Option<f32> {
-    (value.is_finite() && value >= f64::from(f32::MIN) && value <= f64::from(f32::MAX))
-        .then_some(value as f32)
 }

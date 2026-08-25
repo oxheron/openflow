@@ -42,15 +42,30 @@ Binary: `openflow-asr-worker`.
 - `unload_model {}` releases the model and sessions.
 - `start_session {"session_id":"...","language":"auto","initial_prompt":"..."}`.
 - `end_session {"session_id":"..."}`.
-- `transcribe {"session_id":"...","samples_s16le_base64":"...","final":false}` where
-  the string is canonical standard base64 containing complete 16 kHz mono PCM S16LE
+- `transcribe {"session_id":"...","samples_s16le_base64":"...","final":false,"initial_prompt":"optional rolling context"}`. The per-call `initial_prompt` overrides the session prompt for that decode. The audio string contains
+  canonical standard base64 with complete 16 kHz mono PCM S16LE
   samples. For protocol compatibility, callers may instead supply `samples` as normalized,
   finite f32 values, but never both encodings. Result fields are `session_id`,
-  `final`, `text`, detected `language`, flat `tokens`, and timestamped `segments`.
-  Tokens are `{"text":"...","probability":0.0}`; segment times are milliseconds.
+  `final`, `text`, detected `language`, flat `tokens`, timestamped `segments`, and
+  `hypotheses`. Tokens are `{"text":"...","probability":0.0}`; segment times are
+  milliseconds. `hypotheses` contains up to three unique visible-text alternatives in
+  descending Whisper beam-score order. The first entry is the selected `text`. Each entry
+  contains `text`, Whisper's length-penalized `score`, `mean_log_probability`, flat
+  `tokens`, and `segments` with the same shapes as the selected result.
+
+The reviewed whisper.cpp patch exposes the candidates already computed by its five-way
+beam search; it does not run additional inference. For the intended rolling requests of
+at most one Whisper encoder window (30 seconds), every hypothesis covers the complete
+request. If a longer request enters whisper.cpp's internal multi-window path, alternatives
+share the selected text from completed earlier windows and differ only in the most recent
+decoder window. In that case `score` is the newest window's beam-ranking score while
+`mean_log_probability` is length-normalized across the composed candidate. Non-selected
+hypothesis segments use decoder-window boundaries; the selected hypothesis retains the
+normal Whisper segment timestamps.
 
 For deterministic tests, mock transcription additionally accepts `mock_text` and
-`mock_probabilities`. These fields have no effect on whisper.cpp.
+`mock_probabilities`. These fields have no effect on whisper.cpp. The mock returns one
+hypothesis identical to its selected transcript.
 
 ## LLM worker
 
@@ -64,6 +79,9 @@ Binary: `openflow-llm-worker`.
   caller ownership. Version 1 reserves `context` but scores the explicit supplied text.
 - `score {"session_id":"...","text":"..."}` → total/mean log probability, token
   count, and per-token log probabilities.
+- `rank_candidates` length-normalizes and orders a finite set of ASR-supported wording
+  candidates using shared left and optional right context. It scores only supplied candidates;
+  it cannot generate or accept a replacement transcript.
 - `propose_edits {"session_id":"...","text":"..."}` emits deterministic safe
   formatting/exact adjacent-duplicate candidates plus llama.cpp-generated lexical
   candidates. Generation is greedy, non-thinking, capped at 512 tokens/eight edits, and
@@ -79,6 +97,71 @@ limited to 2048 tokens and must leave room for the 512-token generation cap; ove
 cleanup requests fail explicitly instead of reallocating enough context to exhaust a
 consumer GPU. Context memory is cleared between independent operations, so text from one
 dictation session cannot condition another.
+
+`rank_candidates` accepts one to 16 candidates. Candidate IDs must be unique strings of at
+most 128 bytes; candidate text must be non-empty and at most 1024 bytes. The combined shared
+context is capped at 4096 bytes. Strings are concatenated verbatim, so callers own boundary
+spacing.
+
+```json
+{
+  "session_id": "s1",
+  "left_context": "We use ",
+  "right_context": " for training.",
+  "candidates": [
+    {"id":"pass-4-beam-0","text":"pie torch"},
+    {"id":"pass-5-beam-0","text":"PyTorch"}
+  ],
+  "propose_normalizations": true
+}
+```
+
+`rankings` is ordered best-first. Each item contains `id`, `log_probability`,
+`token_count`, `mean_log_probability`, `candidate_log_probability`, and
+`right_context_log_probability_delta`. The score is candidate-local rather than a mean over
+the common context:
+
+```text
+candidate = log P(C | L)
+right_fit = log P(R | L,C) - log P(R | L)
+log_probability = candidate + right_fit
+mean_log_probability = log_probability / tokens(C)
+```
+
+`right_fit` is zero when `right_context` is empty. Subtracting the shared right-context
+baseline lets following words inform the choice without their common likelihood swamping the
+ambiguous span. Callers combine this language score with stronger ASR beam/cross-pass evidence;
+the worker does not make a commit decision.
+
+When `propose_normalizations` is true, proposals are generated only for the highest-ranked
+supplied candidate:
+
+```json
+{
+  "normalization": {
+    "candidate_id": "pass-4-beam-0",
+    "proposals": [
+      {
+        "start_byte": 0,
+        "end_byte": 9,
+        "source": "pie torch",
+        "replacement": "PyTorch",
+        "kind": "canonical_name",
+        "grounding": "phonetic_equivalence"
+      }
+    ]
+  }
+}
+```
+
+Normalization generation is grammar-constrained to at most eight exact UTF-8 byte-span edits.
+Allowed kinds are `formatting`, `word_boundary`, `orthographic_normalization`,
+`canonical_name`, and `spoken_symbol`. Grounding is one of `lexical_skeleton`,
+`phonetic_equivalence`, `canonical_alias`, or `spoken_symbol`, with kind/grounding pairs
+validated structurally. Proposals are local (at most four words/128 bytes), cannot target
+protected numbers, URLs, paths, or code-like spans, and never contain a whole replacement
+transcript. They are untrusted suggestions: the worker neither applies nor accepts them, and
+phonetic/semantic grounding still requires the caller's ASR evidence and stability policy.
 
 `cleanup` accepts:
 

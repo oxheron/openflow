@@ -65,6 +65,10 @@ class MockBackend final : public Backend {
   }
 
   std::string propose_edits_json(const std::string&) override { return "[]"; }
+  std::string propose_normalizations_json(const std::string&, const std::string&,
+                                          const std::string&) override {
+    return "[]";
+  }
 };
 
 #ifdef OPENFLOW_HAS_LLAMA_CPP
@@ -189,6 +193,43 @@ ws ::= | " " | "\n" [ \t]{0,8}
         "<|im_start|>user\n<transcript>" + text +
         "</transcript>\n<|im_end|>\n<|im_start|>assistant\n";
 
+    return generate_json_array(prompt, kGrammar, "edit");
+  }
+
+  std::string propose_normalizations_json(const std::string& left_context,
+                                          const std::string& text,
+                                          const std::string& right_context) override {
+    require_loaded();
+    static constexpr const char* kGrammar = R"gbnf(
+root ::= ws "[" ws (edit (ws "," ws edit){0,7})? ws "]" ws
+edit ::= "{" ws "\"start_byte\"" ws ":" ws integer ws "," ws "\"end_byte\"" ws ":" ws integer ws "," ws "\"source\"" ws ":" ws string ws "," ws "\"replacement\"" ws ":" ws string ws "," ws "\"kind\"" ws ":" ws kind ws "," ws "\"grounding\"" ws ":" ws grounding ws "}"
+kind ::= "\"formatting\"" | "\"word_boundary\"" | "\"orthographic_normalization\"" | "\"canonical_name\"" | "\"spoken_symbol\""
+grounding ::= "\"lexical_skeleton\"" | "\"phonetic_equivalence\"" | "\"canonical_alias\"" | "\"spoken_symbol\""
+integer ::= "0" | [1-9] [0-9]{0,8}
+string ::= "\"" character{0,128} "\""
+character ::= [^"\\\x00-\x1F] | "\\" (["\\/bfnrt] | "u" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F])
+ws ::= | " " | "\n" [ \t]{0,8}
+)gbnf";
+
+    const std::string prompt =
+        "<|im_start|>system\n"
+        "/no_think\nNormalize only the surface form of the fixed ASR candidate. Preserve "
+        "its apparent spoken sounds and meaning; never add, remove, reorder, or infer semantic "
+        "content. Allowed local edits are punctuation/capitalization, word boundaries, obvious "
+        "orthography, canonical names, and spoken symbols. Return at most 8 JSON edits with exact "
+        "UTF-8 byte offsets and source text into candidate. Declare kind and grounding. Use [] "
+        "when uncertain. JSON only.\n<|im_end|>\n"
+        "<|im_start|>user\n<left_context>" + left_context +
+        "</left_context>\n<candidate>" + text + "</candidate>\n<right_context>" +
+        right_context + "</right_context>\n<|im_end|>\n<|im_start|>assistant\n";
+
+    return generate_json_array(prompt, kGrammar, "normalization");
+  }
+
+ private:
+  std::string generate_json_array(const std::string& prompt, const char* grammar_text,
+                                  const char* subject) {
+
     const llama_vocab* vocabulary = llama_model_get_vocab(model_);
     int prompt_token_count = llama_tokenize(vocabulary, prompt.data(),
                                             static_cast<int32_t>(prompt.size()), nullptr, 0,
@@ -204,7 +245,11 @@ ws ::= | " " | "\n" [ \t]{0,8}
     constexpr std::size_t kMaximumGeneratedTokens = 512;
     if (prompt_tokens.size() > kBatchTokens ||
         prompt_tokens.size() + kMaximumGeneratedTokens + 8 > kContextTokens) {
-      throw std::invalid_argument("transcript exceeds the reusable llama.cpp generation context");
+      if (std::string(subject) == "edit") {
+        throw std::invalid_argument("transcript exceeds the reusable llama.cpp generation context");
+      }
+      throw std::invalid_argument(std::string(subject) +
+                                  " prompt exceeds the reusable llama.cpp generation context");
     }
     llama_memory_clear(llama_get_memory(context_), true);
     llama_sampler_chain_params sampler_parameters = llama_sampler_chain_default_params();
@@ -212,7 +257,7 @@ ws ::= | " " | "\n" [ \t]{0,8}
     if (sampler == nullptr) {
       throw std::runtime_error("llama.cpp failed to create sampler");
     }
-    llama_sampler* grammar = llama_sampler_init_grammar(vocabulary, kGrammar, "root");
+    llama_sampler* grammar = llama_sampler_init_grammar(vocabulary, grammar_text, "root");
     if (grammar == nullptr) {
       llama_sampler_free(sampler);
       throw std::runtime_error("llama.cpp failed to parse edit grammar");
@@ -254,7 +299,9 @@ ws ::= | " " | "\n" [ \t]{0,8}
         if (piece_size < 0) throw std::runtime_error("llama.cpp token rendering failed");
         const std::string rendered(piece.data(), static_cast<std::size_t>(piece_size));
         output += rendered;
-        if (output.size() > 64U * 1024U) throw std::runtime_error("generated edit JSON is too large");
+        if (output.size() > 64U * 1024U) {
+          throw std::runtime_error(std::string("generated ") + subject + " JSON is too large");
+        }
         for (const char character : rendered) {
           if (in_string) {
             if (escaped) escaped = false;
@@ -293,11 +340,12 @@ ws ::= | " " | "\n" [ \t]{0,8}
     }
     llama_batch_free(batch);
     llama_sampler_free(sampler);
-    if (output.empty()) throw std::runtime_error("llama.cpp returned no edit JSON");
+    if (output.empty()) {
+      throw std::runtime_error(std::string("llama.cpp returned no ") + subject + " JSON");
+    }
     return output;
   }
 
- private:
   void require_loaded() const {
     if (model_ == nullptr || context_ == nullptr) throw std::runtime_error("model is not loaded");
   }

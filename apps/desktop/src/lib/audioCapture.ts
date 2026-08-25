@@ -126,7 +126,7 @@ export interface SpeechBoundaryOptions {
 const defaultBoundaryOptions: SpeechBoundaryOptions = {
   sampleRateHz: 16_000,
   minimumSpeechMs: 160,
-  trailingSilenceMs: 900,
+  trailingSilenceMs: 700,
   minimumThreshold: 0.012,
   noiseMultiplier: 3,
 };

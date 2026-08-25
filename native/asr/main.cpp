@@ -101,12 +101,40 @@ Value transcription_json(const Transcription& transcription, const std::string& 
                                         {"text", segment.text},
                                         {"tokens", std::move(tokens)}});
   }
+  Value::Array hypotheses;
+  for (const auto& hypothesis : transcription.hypotheses) {
+    Value::Array hypothesis_tokens;
+    for (const auto& token : hypothesis.tokens) {
+      hypothesis_tokens.emplace_back(
+          Value::Object{{"text", token.text}, {"probability", token.probability}});
+    }
+    Value::Array hypothesis_segments;
+    for (const auto& segment : hypothesis.segments) {
+      Value::Array tokens;
+      for (const auto& token : segment.tokens) {
+        tokens.emplace_back(
+            Value::Object{{"text", token.text}, {"probability", token.probability}});
+      }
+      hypothesis_segments.emplace_back(
+          Value::Object{{"start_ms", static_cast<double>(segment.start_ms)},
+                        {"end_ms", static_cast<double>(segment.end_ms)},
+                        {"text", segment.text},
+                        {"tokens", std::move(tokens)}});
+    }
+    hypotheses.emplace_back(
+        Value::Object{{"text", hypothesis.text},
+                      {"score", hypothesis.score},
+                      {"mean_log_probability", hypothesis.mean_log_probability},
+                      {"tokens", std::move(hypothesis_tokens)},
+                      {"segments", std::move(hypothesis_segments)}});
+  }
   return Value::Object{{"session_id", session_id},
                        {"final", final},
                        {"text", transcription.text},
                        {"language", transcription.language},
                        {"tokens", std::move(flat_tokens)},
-                       {"segments", std::move(segments)}};
+                       {"segments", std::move(segments)},
+                       {"hypotheses", std::move(hypotheses)}};
 }
 
 class Service {
@@ -161,7 +189,8 @@ class Service {
     if (iterator == sessions_.end()) throw std::invalid_argument("unknown session_id");
     TranscriptionRequest request;
     request.language = iterator->second.language;
-    request.initial_prompt = iterator->second.initial_prompt;
+    request.initial_prompt =
+        json::string_or(params, "initial_prompt", iterator->second.initial_prompt);
     request.final = json::bool_or(params, "final", false);
     request.mock_text = json::string_or(params, "mock_text", "");
     if (params.find("samples") != nullptr && params.find("samples_s16le_base64") != nullptr) {

@@ -10,6 +10,7 @@ pub mod error;
 pub mod inference;
 pub mod models;
 pub mod pairing;
+pub mod rolling_consensus;
 pub mod routes;
 pub mod state;
 
@@ -18,7 +19,9 @@ use axum::Router;
 use std::{net::SocketAddr, sync::Arc};
 
 pub use inference::{
-    InferenceEngine, UnavailableInferenceEngine, WorkerClient, WorkerInferenceEngine,
+    CandidateRankingRequest, CandidateRankingResult, InferenceEngine, LanguageCandidate,
+    LanguageCandidateScore, NormalizationProposal, UnavailableInferenceEngine, WorkerClient,
+    WorkerInferenceEngine,
 };
 pub use state::SessionGate;
 

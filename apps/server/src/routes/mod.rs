@@ -3,7 +3,10 @@ mod dictation;
 mod models;
 
 #[doc(hidden)]
-pub use dictation::{common_utf8_prefix, enforce_memory_budget, websocket_bearer};
+pub use dictation::{
+    apply_normalizations, common_utf8_prefix, enforce_memory_budget, language_left_context,
+    language_right_context, rolling_audio_window, websocket_bearer,
+};
 
 use crate::{auth::Principal, error::ServerError, state::AppState};
 use axum::{
