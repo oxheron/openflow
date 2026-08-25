@@ -19,7 +19,8 @@
         "minWidth": 760,
         "minHeight": 600,
         "center": true,
-        "resizable": true
+        "resizable": true,
+        "backgroundThrottling": "disabled"
       },
       {
         "label": "overlay",

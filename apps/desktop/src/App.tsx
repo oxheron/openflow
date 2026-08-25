@@ -31,7 +31,7 @@ export default function App() {
   const toggle = useCallback(() => {
     void controller.toggle().catch(() => undefined);
   }, [controller.toggle]);
-  const hotkeyError = useHotkey(settings.hotkey, toggle);
+  const hotkeyRegistration = useHotkey(settings.hotkey, toggle);
   const attemptedConnection = useRef<string | null>(null);
 
   useEffect(() => {
@@ -136,9 +136,16 @@ export default function App() {
         phase: controller.session.phase,
         transcript: controller.transcript,
         hotkey: settings.hotkey,
+        audioDiagnostics: controller.audioDiagnostics,
       });
     })().catch(() => undefined);
-  }, [controller.session.phase, controller.transcript, settings.hotkey, settings.showOverlay]);
+  }, [
+    controller.audioDiagnostics,
+    controller.session.phase,
+    controller.transcript,
+    settings.hotkey,
+    settings.showOverlay,
+  ]);
 
   useEffect(() => {
     if (!notice) return;
@@ -192,7 +199,7 @@ export default function App() {
           <PreferencesPanel
             settings={settings}
             platform={controller.platform}
-            hotkeyError={hotkeyError}
+            hotkeyRegistration={hotkeyRegistration}
             onSettingsChange={setSettings}
             onReset={resetSettings}
           />
