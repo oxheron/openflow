@@ -12,6 +12,8 @@
 #include <stdexcept>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 namespace openflow::inference::llm {
 namespace {
@@ -58,6 +60,86 @@ Value encode_candidate(const EditCandidate& candidate) {
                        {"end_byte", candidate.end_byte},
                        {"replacement", candidate.replacement},
                        {"kind", edit_kind_name(candidate.kind)}};
+}
+
+struct RankedCandidate {
+  std::string id;
+  std::string text;
+  std::size_t input_index{0};
+  double log_probability{0.0};
+  std::size_t token_count{0};
+  double mean_log_probability{0.0};
+  double candidate_log_probability{0.0};
+  double right_context_log_probability_delta{0.0};
+};
+
+struct NormalizationProposal {
+  EditCandidate edit;
+  NormalizationGrounding grounding{NormalizationGrounding::kLexicalSkeleton};
+};
+
+Score score_or_empty(Backend& backend, const std::string& text) {
+  return text.empty() ? Score{} : backend.score(text);
+}
+
+double continuation_log_probability(const Score& combined, const Score& prefix) {
+  return combined.log_probability - prefix.log_probability;
+}
+
+Value encode_ranking(const RankedCandidate& candidate) {
+  return Value::Object{
+      {"id", candidate.id},
+      {"log_probability", candidate.log_probability},
+      {"token_count", candidate.token_count},
+      {"mean_log_probability", candidate.mean_log_probability},
+      {"candidate_log_probability", candidate.candidate_log_probability},
+      {"right_context_log_probability_delta",
+       candidate.right_context_log_probability_delta}};
+}
+
+Value encode_normalization(const NormalizationProposal& proposal,
+                           const std::string& source) {
+  return Value::Object{{"start_byte", proposal.edit.start_byte},
+                       {"end_byte", proposal.edit.end_byte},
+                       {"source", source},
+                       {"replacement", proposal.edit.replacement},
+                       {"kind", edit_kind_name(proposal.edit.kind)},
+                       {"grounding", normalization_grounding_name(proposal.grounding)}};
+}
+
+std::vector<NormalizationProposal> generated_normalizations(
+    Backend& backend, const std::string& left_context, const std::string& text,
+    const std::string& right_context) {
+  const std::string encoded =
+      backend.propose_normalizations_json(left_context, text, right_context);
+  try {
+    const Value document = json::parse(encoded);
+    const auto& array = document.as_array();
+    if (array.size() > 8) return {};
+    std::vector<NormalizationProposal> output;
+    for (const auto& item : array) {
+      try {
+        const std::size_t start = item.at("start_byte").as_size();
+        const std::size_t end = item.at("end_byte").as_size();
+        const std::string source = item.at("source").as_string();
+        const EditCandidate edit{start, end, item.at("replacement").as_string(),
+                                 parse_edit_kind(item.at("kind").as_string())};
+        const auto grounding =
+            parse_normalization_grounding(item.at("grounding").as_string());
+        if (start > end || end > text.size() || text.substr(start, end - start) != source) {
+          continue;
+        }
+        if (!validate_normalization_proposal(text, edit, grounding).valid) continue;
+        output.push_back(NormalizationProposal{edit, grounding});
+      } catch (const std::exception&) {
+        // Generated model output is untrusted. A malformed local proposal is
+        // ignored and cannot suppress other valid proposals.
+      }
+    }
+    return output;
+  } catch (const std::exception&) {
+    return {};
+  }
 }
 
 std::vector<WordEvidence> plain_words(const std::string& text, double confidence) {
@@ -166,10 +248,14 @@ std::vector<EditCandidate> decode_candidates(const Value& params, const std::str
   }
   std::vector<EditCandidate> output;
   for (const auto& candidate : encoded->as_array()) {
+    const EditKind kind = parse_edit_kind(json::string_or(candidate, "kind", "lexical"));
+    if (kind != EditKind::kFormatting && kind != EditKind::kAdjacentDuplicate &&
+        kind != EditKind::kLexical) {
+      throw std::invalid_argument("cleanup does not accept normalization proposal kinds");
+    }
     output.push_back(EditCandidate{candidate.at("start_byte").as_size(),
                                    candidate.at("end_byte").as_size(),
-                                   candidate.at("replacement").as_string(),
-                                   parse_edit_kind(json::string_or(candidate, "kind", "lexical"))});
+                                   candidate.at("replacement").as_string(), kind});
   }
   return output;
 }
@@ -287,6 +373,7 @@ class Service {
       }
       return Value::Object{{"candidates", std::move(candidates)}};
     }
+    if (command == "rank_candidates") return rank_candidates(params);
     if (command == "cleanup") return cleanup(params);
     throw std::invalid_argument("unknown LLM command: " + command);
   }
@@ -300,6 +387,106 @@ class Service {
     require_backend();
     const std::string id = params.at("session_id").as_string();
     if (sessions_.find(id) == sessions_.end()) throw std::invalid_argument("unknown session_id");
+  }
+
+  Value rank_candidates(const Value& params) {
+    require_session(params);
+    const std::string left_context = json::string_or(params, "left_context", "");
+    const std::string right_context = json::string_or(params, "right_context", "");
+    constexpr std::size_t kMaximumSharedContextBytes = 4096;
+    constexpr std::size_t kMaximumCandidateBytes = 1024;
+    constexpr std::size_t kMaximumCandidateIdBytes = 128;
+    constexpr std::size_t kMaximumCandidates = 16;
+    if (left_context.size() + right_context.size() > kMaximumSharedContextBytes) {
+      throw std::invalid_argument("rank_candidates shared context exceeds 4096 bytes");
+    }
+    const auto& encoded_candidates = params.at("candidates").as_array();
+    if (encoded_candidates.empty() || encoded_candidates.size() > kMaximumCandidates) {
+      throw std::invalid_argument("rank_candidates accepts between 1 and 16 candidates");
+    }
+
+    std::vector<RankedCandidate> rankings;
+    rankings.reserve(encoded_candidates.size());
+    std::unordered_set<std::string> ids;
+    const Score left_score = score_or_empty(*backend_, left_context);
+    double baseline_right_log_probability = 0.0;
+    if (!right_context.empty()) {
+      baseline_right_log_probability = continuation_log_probability(
+          backend_->score(left_context + right_context), left_score);
+    }
+
+    for (std::size_t index = 0; index < encoded_candidates.size(); ++index) {
+      const auto& encoded = encoded_candidates[index];
+      const std::string id = encoded.at("id").as_string();
+      const std::string text = encoded.at("text").as_string();
+      if (id.empty() || id.size() > kMaximumCandidateIdBytes || !ids.insert(id).second) {
+        throw std::invalid_argument("candidate ids must be unique non-empty strings of at most 128 bytes");
+      }
+      if (text.empty() || text.size() > kMaximumCandidateBytes ||
+          std::all_of(text.begin(), text.end(), [](unsigned char character) {
+            return std::isspace(character) != 0;
+          })) {
+        throw std::invalid_argument("candidate text must contain 1 to 1024 bytes of non-whitespace text");
+      }
+
+      const Score candidate_sequence = backend_->score(left_context + text);
+      const double candidate_log_probability =
+          continuation_log_probability(candidate_sequence, left_score);
+      double right_context_delta = 0.0;
+      if (!right_context.empty()) {
+        const Score full_sequence = backend_->score(left_context + text + right_context);
+        const double candidate_right_log_probability =
+            continuation_log_probability(full_sequence, candidate_sequence);
+        // Contrast against the same right context without this candidate. This
+        // keeps common-context likelihood out of the candidate-local score while
+        // still measuring how well the wording joins to following speech.
+        right_context_delta =
+            candidate_right_log_probability - baseline_right_log_probability;
+      }
+      const std::size_t token_count = backend_->score_token_count(text);
+      if (token_count == 0) {
+        throw std::invalid_argument("candidate text produced no scoreable tokens");
+      }
+      const double log_probability = candidate_log_probability + right_context_delta;
+      if (!std::isfinite(log_probability)) {
+        throw std::runtime_error("backend returned a non-finite candidate score");
+      }
+      rankings.push_back(RankedCandidate{id,
+                                         text,
+                                         index,
+                                         log_probability,
+                                         token_count,
+                                         log_probability / static_cast<double>(token_count),
+                                         candidate_log_probability,
+                                         right_context_delta});
+    }
+
+    std::stable_sort(rankings.begin(), rankings.end(), [](const auto& left, const auto& right) {
+      if (left.mean_log_probability != right.mean_log_probability) {
+        return left.mean_log_probability > right.mean_log_probability;
+      }
+      if (left.log_probability != right.log_probability) {
+        return left.log_probability > right.log_probability;
+      }
+      return left.input_index < right.input_index;
+    });
+    Value::Array encoded_rankings;
+    for (const auto& ranking : rankings) encoded_rankings.push_back(encode_ranking(ranking));
+    Value result = Value::Object{{"rankings", std::move(encoded_rankings)}};
+
+    if (json::bool_or(params, "propose_normalizations", false)) {
+      const auto& winner = rankings.front();
+      Value::Array proposals;
+      for (const auto& proposal : generated_normalizations(
+               *backend_, left_context, winner.text, right_context)) {
+        proposals.push_back(encode_normalization(
+            proposal, winner.text.substr(proposal.edit.start_byte,
+                                         proposal.edit.end_byte - proposal.edit.start_byte)));
+      }
+      result["normalization"] =
+          Value::Object{{"candidate_id", winner.id}, {"proposals", std::move(proposals)}};
+    }
+    return result;
   }
 
   Value cleanup(const Value& params) {

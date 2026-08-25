@@ -36,6 +36,20 @@ fetch_checkout() {
   printf '%s=%s\n' "$name" "$commit"
 }
 
+apply_reviewed_patch() {
+  local name=$1
+  local directory=$2
+  local patch=$3
+
+  if git -C "$directory" apply --reverse --check "$patch" >/dev/null 2>&1; then
+    echo "$name reviewed patch is already applied" >&2
+    return
+  fi
+  git -C "$directory" apply --check "$patch"
+  git -C "$directory" apply "$patch"
+  echo "applied reviewed patch to $name: $patch" >&2
+}
+
 {
   echo "# Resolved by scripts/fetch-inference-sources.sh"
   fetch_checkout \
@@ -44,6 +58,10 @@ fetch_checkout() {
     "$OPENFLOW_WHISPER_CPP_RELEASE" \
     "$OPENFLOW_WHISPER_CPP_REVISION" \
     "$DESTINATION/whisper.cpp"
+  apply_reviewed_patch \
+    whisper.cpp \
+    "$DESTINATION/whisper.cpp" \
+    "$REPOSITORY_ROOT/packaging/patches/whisper.cpp-v1.9.1-nbest.patch"
   fetch_checkout \
     llama.cpp \
     "$OPENFLOW_LLAMA_CPP_REPOSITORY" \

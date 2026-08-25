@@ -24,6 +24,12 @@ pub struct ServerConfig {
     pub pairing_ttl: Duration,
     pub max_audio_bytes_per_session: usize,
     pub partial_decode_bytes: usize,
+    /// Maximum PCM retained in each rolling partial-decode request.
+    pub rolling_window_bytes: usize,
+    /// Recent audio which remains revisable even when hypotheses agree.
+    pub unstable_tail_ms: u64,
+    /// Consecutive rolling passes required before text can be committed.
+    pub consensus_passes: usize,
     pub asr_worker_path: Option<PathBuf>,
     pub llm_worker_path: Option<PathBuf>,
     pub worker_backend: String,
@@ -81,13 +87,19 @@ impl ServerConfig {
             rotate_bootstrap_admin_token: env::var_os("OPENFLOW_ROTATE_BOOTSTRAP_ADMIN_TOKEN")
                 .is_some(),
             pairing_ttl: Duration::from_mins(10),
-            // 60 seconds of 16 kHz mono PCM S16LE. This also keeps the
-            // JSON-expanded native worker frame below its 16 MiB ceiling.
+            // Retain at most 60 seconds of 16 kHz mono PCM S16LE so an absent
+            // VAD boundary cannot grow a session indefinitely.
             max_audio_bytes_per_session: 60 * 16_000 * 2,
             // Decode a rolling partial every two seconds of PCM. Whisper works
             // on a much larger internal window, so decoding every 500 ms adds
             // substantial GPU work without useful transcript stability.
             partial_decode_bytes: 2 * 16_000 * 2,
+            // Whisper's acoustic context is 30 seconds. A 25-second rolling
+            // window leaves margin around timestamp boundaries while bounding
+            // repeated partial-decode work.
+            rolling_window_bytes: 25 * 16_000 * 2,
+            unstable_tail_ms: 6_000,
+            consensus_passes: 3,
             asr_worker_path: env::var_os("OPENFLOW_ASR_WORKER").map(PathBuf::from),
             llm_worker_path: env::var_os("OPENFLOW_LLM_WORKER").map(PathBuf::from),
             worker_backend: env::var("OPENFLOW_WORKER_BACKEND").unwrap_or_else(|_| "auto".into()),
@@ -111,9 +123,37 @@ impl ServerConfig {
                     .into(),
             ));
         }
-        if self.max_audio_bytes_per_session == 0 || self.partial_decode_bytes == 0 {
+        if self.max_audio_bytes_per_session == 0
+            || self.partial_decode_bytes == 0
+            || self.rolling_window_bytes == 0
+            || self.unstable_tail_ms == 0
+        {
             return Err(ServerError::Configuration(
                 "audio limits must be greater than zero".into(),
+            ));
+        }
+        if !(2..=3).contains(&self.consensus_passes) {
+            return Err(ServerError::Configuration(
+                "rolling transcript consensus requires two or three passes".into(),
+            ));
+        }
+        if self.partial_decode_bytes >= self.rolling_window_bytes
+            || self.rolling_window_bytes > self.max_audio_bytes_per_session
+            || !self.partial_decode_bytes.is_multiple_of(2)
+            || !self.rolling_window_bytes.is_multiple_of(2)
+        {
+            return Err(ServerError::Configuration(
+                "partial and rolling audio windows must contain complete PCM samples, overlap, and fit within the session audio limit"
+                    .into(),
+            ));
+        }
+        let rolling_window_ms = u64::try_from(self.rolling_window_bytes)
+            .unwrap_or(u64::MAX)
+            .saturating_mul(1_000)
+            / (16_000 * 2);
+        if self.unstable_tail_ms >= rolling_window_ms {
+            return Err(ServerError::Configuration(
+                "the unstable transcript tail must be shorter than the rolling audio window".into(),
             ));
         }
         if !matches!(

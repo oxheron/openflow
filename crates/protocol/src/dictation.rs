@@ -124,6 +124,9 @@ pub struct TranscriptionRequest {
     pub segment_id: u64,
     pub audio: Vec<u8>,
     pub final_segment: bool,
+    /// A short immutable prefix already committed by rolling consensus. ASR
+    /// adapters may use it as decode context but must not emit it as audio.
+    pub prompt_context: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -134,6 +137,26 @@ pub struct TranscriptionResult {
     pub tokens: Vec<TokenEvidence>,
     #[serde(default)]
     pub edits: Vec<CleanupEdit>,
+    /// Ranked acoustically supported alternatives for the same audio window.
+    ///
+    /// The first hypothesis is the backend's selected transcript and therefore
+    /// normally has the same text as `raw_text`. Backends which cannot expose
+    /// alternatives may leave this empty.
+    #[serde(default)]
+    pub hypotheses: Vec<TranscriptHypothesis>,
+}
+
+/// One ranked ASR decoding of a transcription request.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TranscriptHypothesis {
+    pub text: String,
+    /// Backend sequence score. This is useful for ordering results from one
+    /// decode but should not be compared across unrelated models.
+    pub score: f32,
+    /// Length-normalized acoustic log probability for cross-candidate ranking.
+    pub mean_log_probability: f32,
+    #[serde(default)]
+    pub tokens: Vec<TokenEvidence>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

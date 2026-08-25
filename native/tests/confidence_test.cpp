@@ -102,12 +102,61 @@ void validation_cases() {
          "lexical replacement cannot bypass gates by claiming formatting kind");
 }
 
+void normalization_cases() {
+  const auto formatting = validate_normalization_proposal(
+      "hello", {0, 1, "H", EditKind::kFormatting},
+      NormalizationGrounding::kLexicalSkeleton);
+  expect(formatting.valid, "capitalization is a structured formatting normalization");
+
+  const auto boundary = validate_normalization_proposal(
+      "web site", {0, 8, "website", EditKind::kWordBoundary},
+      NormalizationGrounding::kLexicalSkeleton);
+  expect(boundary.valid, "word-boundary edits require the same lexical skeleton");
+
+  const auto canonical = validate_normalization_proposal(
+      "pie torch", {0, 9, "PyTorch", EditKind::kCanonicalName},
+      NormalizationGrounding::kPhoneticEquivalence);
+  expect(canonical.valid, "canonical names may declare phonetic grounding");
+
+  const auto symbol = validate_normalization_proposal(
+      "see plus plus", {0, 13, "C++", EditKind::kSpokenSymbol},
+      NormalizationGrounding::kSpokenSymbol);
+  expect(symbol.valid, "spoken symbols have a dedicated normalization class");
+
+  const auto ungrounded = validate_normalization_proposal(
+      "pie torch", {0, 9, "PyTorch", EditKind::kCanonicalName},
+      NormalizationGrounding::kLexicalSkeleton);
+  expect(!ungrounded.valid && ungrounded.reason == "incompatible_grounding",
+         "normalization kind and grounding must agree");
+
+  const auto freeform = validate_normalization_proposal(
+      "database", {0, 8, "PostgreSQL", EditKind::kLexical},
+      NormalizationGrounding::kPhoneticEquivalence);
+  expect(!freeform.valid && freeform.reason == "disallowed_kind",
+         "generic lexical replacements are not normalization proposals");
+
+  const auto not_cleanup = gate_edit(
+      "pie torch", {{"pie torch", 0, 9, 0.1, false}}, {},
+      {0, 9, "PyTorch", EditKind::kCanonicalName}, -4.0, 4.0, 1);
+  expect(!not_cleanup.accepted &&
+             not_cleanup.reason == "normalization_requires_external_evidence",
+         "legacy cleanup cannot accept a structured normalization proposal");
+
+  const std::string utf8 = "café";
+  const auto split_utf8 = validate_normalization_proposal(
+      utf8, {3, 4, "e", EditKind::kOrthographicNormalization},
+      NormalizationGrounding::kPhoneticEquivalence);
+  expect(!split_utf8.valid && split_utf8.reason == "invalid_range",
+         "normalization spans cannot split UTF-8 code points");
+}
+
 }  // namespace
 
 int main() {
   regression_policy_cases();
   aggregation_cases();
   validation_cases();
+  normalization_cases();
   if (failures != 0) std::cerr << failures << " confidence test(s) failed\n";
   return failures == 0 ? 0 : 1;
 }

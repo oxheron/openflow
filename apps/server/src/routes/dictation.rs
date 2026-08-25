@@ -1,5 +1,10 @@
 use crate::{
     error::ServerError,
+    inference::{CandidateRankingRequest, LanguageCandidate, NormalizationProposal},
+    rolling_consensus::{
+        ConsensusConfig, Hypothesis as ConsensusHypothesis, Pass as ConsensusPass,
+        RollingConsensus, TimedWord,
+    },
     state::{AppState, SessionLease},
 };
 use axum::{
@@ -12,8 +17,9 @@ use axum::{
 };
 use futures_util::{SinkExt, StreamExt};
 use openflow_protocol::{
-    AudioEncoding, ClientMessage, CorrectionPatch, ModelKind, PROTOCOL_VERSION, PartialTranscript,
-    SegmentFinal, ServerMessage, SessionConfig, TranscriptionRequest,
+    AudioEncoding, CleanupEdit, ClientMessage, CorrectionPatch, ModelKind, PROTOCOL_VERSION,
+    PartialTranscript, SegmentFinal, ServerMessage, SessionConfig, TokenEvidence,
+    TranscriptionRequest, TranscriptionResult,
 };
 use sha2::{Digest, Sha256};
 use std::{
@@ -91,6 +97,7 @@ struct SocketSession {
     sequence: u64,
     bytes_at_last_partial: usize,
     previous_partial: String,
+    consensus: Option<RollingConsensus>,
     lease: Option<SessionLease>,
 }
 
@@ -307,6 +314,7 @@ async fn handle_audio_burst(
     (outcome, pending)
 }
 
+#[allow(clippy::too_many_lines)]
 async fn handle_command(
     outbound: &mpsc::Sender<Message>,
     state: &AppState,
@@ -363,7 +371,27 @@ async fn handle_command(
                 }
             }
             let session_id = config.session_id;
+            let consensus = RollingConsensus::new(ConsensusConfig {
+                history_size: 3,
+                agreement_passes: state.config.consensus_passes,
+                unstable_tail_ms: state.config.unstable_tail_ms,
+                ..ConsensusConfig::default()
+            })
+            .map_err(|error| {
+                tracing::error!(%error, "invalid rolling transcript consensus configuration");
+            })
+            .ok();
+            if consensus.is_none() {
+                return send_error(
+                    outbound,
+                    ServerError::Configuration(
+                        "invalid rolling transcript consensus configuration".into(),
+                    ),
+                )
+                .await;
+            }
             session.config = Some(config);
+            session.consensus = consensus;
             session.lease = Some(lease);
             *active_session
                 .lock()
@@ -384,6 +412,18 @@ async fn handle_command(
                 )
                 .await;
             };
+            if timeout(
+                SESSION_CLEANUP_TIMEOUT,
+                state.inference.cancel_session(config.session_id),
+            )
+            .await
+            .is_err()
+            {
+                tracing::warn!(
+                    session_id = %config.session_id,
+                    "timed out waiting for inference session cleanup"
+                );
+            }
             session.lease.take();
             *active_session
                 .lock()
@@ -498,6 +538,517 @@ async fn maybe_transcribe_partial(
     Ok(())
 }
 
+fn pcm_duration_ms(byte_count: usize) -> u64 {
+    (byte_count as u64 / 2).saturating_mul(1_000) / 16_000
+}
+
+#[doc(hidden)]
+#[must_use]
+pub fn rolling_audio_window(audio: &[u8], maximum_bytes: usize) -> (&[u8], u64, u64) {
+    let end = audio.len() & !1;
+    let retained = end.min(maximum_bytes & !1);
+    let start = end.saturating_sub(retained);
+    (
+        &audio[start..end],
+        pcm_duration_ms(start),
+        pcm_duration_ms(end),
+    )
+}
+
+fn finish_word(
+    words: &mut Vec<TimedWord>,
+    text: &mut String,
+    start_ms: &mut u64,
+    end_ms: &mut u64,
+    probability_sum: &mut f32,
+    probability_count: &mut usize,
+) {
+    if text.is_empty() {
+        return;
+    }
+    words.push(TimedWord {
+        text: std::mem::take(text),
+        start_ms: *start_ms,
+        end_ms: (*end_ms).max(*start_ms),
+        probability: u16::try_from(*probability_count)
+            .ok()
+            .filter(|count| *count > 0)
+            .map(|count| *probability_sum / f32::from(count)),
+    });
+    *probability_sum = 0.0;
+    *probability_count = 0;
+}
+
+fn timed_words(
+    transcript: &str,
+    tokens: &[TokenEvidence],
+    window_start_ms: u64,
+    window_end_ms: u64,
+) -> Vec<TimedWord> {
+    let mut words = Vec::new();
+    let mut current = String::new();
+    let mut current_start = window_start_ms;
+    let mut current_end = window_start_ms;
+    let mut probability_sum = 0.0_f32;
+    let mut probability_count = 0_usize;
+    for token in tokens {
+        let token_start = window_start_ms
+            .saturating_add(token.start_ms)
+            .min(window_end_ms);
+        let token_end = window_start_ms
+            .saturating_add(token.end_ms)
+            .min(window_end_ms)
+            .max(token_start);
+        let mut probability_added = false;
+        for character in token.text.chars() {
+            if character.is_whitespace() {
+                finish_word(
+                    &mut words,
+                    &mut current,
+                    &mut current_start,
+                    &mut current_end,
+                    &mut probability_sum,
+                    &mut probability_count,
+                );
+                probability_added = false;
+                continue;
+            }
+            if current.is_empty() {
+                current_start = token_start;
+                current_end = token_end;
+            } else {
+                current_end = current_end.max(token_end);
+            }
+            current.push(character);
+            if !probability_added {
+                probability_sum += token.probability.clamp(0.0, 1.0);
+                probability_count += 1;
+                probability_added = true;
+            }
+        }
+    }
+    finish_word(
+        &mut words,
+        &mut current,
+        &mut current_start,
+        &mut current_end,
+        &mut probability_sum,
+        &mut probability_count,
+    );
+    if !words.is_empty() {
+        return words;
+    }
+
+    let fallback = transcript.split_whitespace().collect::<Vec<_>>();
+    let duration = window_end_ms.saturating_sub(window_start_ms);
+    let count = fallback.len().max(1) as u64;
+    fallback
+        .into_iter()
+        .enumerate()
+        .map(|(index, text)| {
+            let index = index as u64;
+            TimedWord {
+                text: text.to_owned(),
+                start_ms: window_start_ms + duration * index / count,
+                end_ms: window_start_ms + duration * (index + 1) / count,
+                probability: None,
+            }
+        })
+        .collect()
+}
+
+fn consensus_pass(
+    result: &TranscriptionResult,
+    window_start_ms: u64,
+    window_end_ms: u64,
+) -> ConsensusPass {
+    let hypotheses = if result.hypotheses.is_empty() {
+        vec![ConsensusHypothesis {
+            words: timed_words(
+                &result.raw_text,
+                &result.tokens,
+                window_start_ms,
+                window_end_ms,
+            ),
+            normalized_log_probability: None,
+        }]
+    } else {
+        result
+            .hypotheses
+            .iter()
+            .map(|hypothesis| ConsensusHypothesis {
+                words: timed_words(
+                    &hypothesis.text,
+                    &hypothesis.tokens,
+                    window_start_ms,
+                    window_end_ms,
+                ),
+                normalized_log_probability: Some(hypothesis.mean_log_probability),
+            })
+            .collect()
+    };
+    ConsensusPass {
+        window_start_ms,
+        window_end_ms,
+        hypotheses,
+    }
+}
+
+fn trailing_context(text: &str, maximum_bytes: usize) -> String {
+    let mut start = text.len().saturating_sub(maximum_bytes);
+    while start < text.len() && !text.is_char_boundary(start) {
+        start += 1;
+    }
+    text[start..].to_owned()
+}
+
+#[doc(hidden)]
+#[must_use]
+pub fn language_left_context(text: &str, maximum_bytes: usize) -> String {
+    let mut context = trailing_context(text, maximum_bytes);
+    if !context.is_empty() && !context.chars().next_back().is_some_and(char::is_whitespace) {
+        context.push(' ');
+    }
+    context
+}
+
+#[doc(hidden)]
+#[must_use]
+pub fn language_right_context(
+    update: &crate::rolling_consensus::ConsensusUpdate,
+    ambiguity: &crate::rolling_consensus::AmbiguousSpan,
+    maximum_bytes: usize,
+) -> String {
+    let unstable = update.best_unstable_text.trim_start();
+    let Some(mut context) = ambiguity
+        .candidates
+        .iter()
+        .filter_map(|candidate| unstable.strip_prefix(&candidate.text))
+        .min_by_key(|context| context.len())
+    else {
+        return String::new();
+    };
+    if context.len() > maximum_bytes {
+        let mut end = maximum_bytes;
+        while end > 0 && !context.is_char_boundary(end) {
+            end -= 1;
+        }
+        context = &context[..end];
+    }
+    context.to_owned()
+}
+
+fn lexical_skeleton(text: &str) -> String {
+    text.chars()
+        .filter(|character| character.is_alphanumeric())
+        .flat_map(char::to_lowercase)
+        .collect()
+}
+
+fn edit_distance(left: &str, right: &str) -> usize {
+    let right = right.chars().collect::<Vec<_>>();
+    let mut previous = (0..=right.len()).collect::<Vec<_>>();
+    for (left_index, left_character) in left.chars().enumerate() {
+        let mut current = Vec::with_capacity(right.len() + 1);
+        current.push(left_index + 1);
+        for (right_index, right_character) in right.iter().enumerate() {
+            current.push(
+                (previous[right_index + 1] + 1)
+                    .min(current[right_index] + 1)
+                    .min(previous[right_index] + usize::from(left_character != *right_character)),
+            );
+        }
+        previous = current;
+    }
+    previous[right.len()]
+}
+
+fn phonetic_skeleton(text: &str) -> String {
+    text.split(|character: char| !character.is_alphanumeric())
+        .filter(|word| !word.is_empty())
+        .map(|word| match word.to_ascii_lowercase().as_str() {
+            "are" => "r".to_owned(),
+            "bee" | "be" => "b".to_owned(),
+            "cue" | "queue" => "q".to_owned(),
+            "dee" => "d".to_owned(),
+            "eye" => "i".to_owned(),
+            "ex" => "x".to_owned(),
+            "gee" => "g".to_owned(),
+            "jay" => "j".to_owned(),
+            "oh" | "owe" => "o".to_owned(),
+            "sea" | "see" => "c".to_owned(),
+            "ess" => "s".to_owned(),
+            "tea" | "tee" => "t".to_owned(),
+            "you" => "u".to_owned(),
+            "vee" => "v".to_owned(),
+            "why" => "y".to_owned(),
+            "zed" | "zee" => "z".to_owned(),
+            other => other.to_owned(),
+        })
+        .collect()
+}
+
+fn known_surface_alias(source: &str, replacement: &str) -> bool {
+    matches!(
+        (lexical_skeleton(source).as_str(), replacement.trim()),
+        ("pietorch" | "pytorch", "PyTorch")
+            | ("gethub" | "github", "GitHub")
+            | ("getlab" | "gitlab", "GitLab")
+            | ("cplusplus" | "seeplusplus", "C++")
+    )
+}
+
+fn glossary_supported_alias(source: &str, replacement: &str, glossary: &[String]) -> bool {
+    let replacement_key = lexical_skeleton(replacement);
+    if replacement_key.is_empty() || !glossary.iter().any(|entry| entry == replacement) {
+        return false;
+    }
+    let source_key = phonetic_skeleton(source);
+    let replacement_key = phonetic_skeleton(replacement);
+    let key_length = source_key
+        .chars()
+        .count()
+        .max(replacement_key.chars().count());
+    if key_length < 6 {
+        return source_key == replacement_key;
+    }
+    let maximum_distance = (key_length / 4).clamp(1, 3);
+    edit_distance(&source_key, &replacement_key) <= maximum_distance
+}
+
+fn normalization_is_grounded(proposal: &NormalizationProposal, glossary: &[String]) -> bool {
+    let same_skeleton =
+        lexical_skeleton(&proposal.source) == lexical_skeleton(&proposal.replacement);
+    match (proposal.kind.as_str(), proposal.grounding.as_str()) {
+        ("formatting", "lexical_skeleton") => {
+            if proposal.source.is_empty() {
+                matches!(
+                    proposal.replacement.as_str(),
+                    "." | "," | "!" | "?" | ";" | ":" | "\n" | "…" | "。" | "！" | "？" | "、"
+                )
+            } else {
+                same_skeleton
+            }
+        }
+        ("word_boundary" | "orthographic_normalization", "lexical_skeleton") => same_skeleton,
+        ("orthographic_normalization" | "canonical_name", "phonetic_equivalence")
+        | ("canonical_name", "canonical_alias") => {
+            known_surface_alias(&proposal.source, &proposal.replacement)
+                || glossary_supported_alias(&proposal.source, &proposal.replacement, glossary)
+        }
+        ("spoken_symbol", "spoken_symbol") => {
+            known_surface_alias(&proposal.source, &proposal.replacement)
+        }
+        _ => false,
+    }
+}
+
+#[doc(hidden)]
+#[must_use]
+pub fn apply_normalizations(
+    text: &str,
+    proposals: &[NormalizationProposal],
+    glossary: &[String],
+) -> Option<String> {
+    if proposals.len() > 8 {
+        return None;
+    }
+    let mut proposals = proposals.to_vec();
+    proposals.sort_by_key(|proposal| (proposal.start_byte, proposal.end_byte));
+    let mut previous_end = 0;
+    for proposal in &proposals {
+        if proposal.start_byte > proposal.end_byte
+            || proposal.end_byte > text.len()
+            || proposal.start_byte < previous_end
+            || !text.is_char_boundary(proposal.start_byte)
+            || !text.is_char_boundary(proposal.end_byte)
+            || text[proposal.start_byte..proposal.end_byte] != proposal.source
+            || proposal.source.len() > 128
+            || proposal.replacement.len() > 128
+            || proposal.source.split_whitespace().count() > 4
+            || proposal.replacement.split_whitespace().count() > 4
+            || proposal
+                .replacement
+                .chars()
+                .any(|character| character.is_control() && character != '\n' && character != '\t')
+            || proposal.source == proposal.replacement
+            || !normalization_is_grounded(proposal, glossary)
+        {
+            return None;
+        }
+        previous_end = proposal.end_byte;
+    }
+    let mut normalized = text.to_owned();
+    for proposal in proposals.iter().rev() {
+        normalized.replace_range(
+            proposal.start_byte..proposal.end_byte,
+            &proposal.replacement,
+        );
+    }
+    Some(normalized)
+}
+
+async fn arbitrate_mature_ambiguity(
+    state: &AppState,
+    config: &SessionConfig,
+    consensus: &mut RollingConsensus,
+    update: crate::rolling_consensus::ConsensusUpdate,
+) -> crate::rolling_consensus::ConsensusUpdate {
+    let Some(ambiguity) = update.ambiguities.first() else {
+        return update;
+    };
+    if config.cleanup_model_id.is_none() || ambiguity.candidates.len() < 2 {
+        return update;
+    }
+    let right_context = language_right_context(&update, ambiguity, 1_024);
+    let candidates = ambiguity
+        .candidates
+        .iter()
+        .enumerate()
+        .filter(|(_, candidate)| !candidate.text.trim().is_empty())
+        .map(|(index, candidate)| LanguageCandidate {
+            id: index.to_string(),
+            text: candidate.text.clone(),
+        })
+        .collect::<Vec<_>>();
+    if candidates.len() < 2 {
+        return update;
+    }
+    let ranking = match state
+        .inference
+        .rank_candidates(CandidateRankingRequest {
+            session_id: config.session_id,
+            left_context: language_left_context(consensus.committed_text(), 1_024),
+            right_context,
+            candidates,
+            propose_normalizations: false,
+        })
+        .await
+    {
+        Ok(Some(ranking)) => ranking,
+        Ok(None) => return update,
+        Err(error) => {
+            tracing::warn!(%error, "language-model ambiguity ranking failed; retaining ASR hypotheses");
+            return update;
+        }
+    };
+
+    let language_min = ranking
+        .rankings
+        .iter()
+        .map(|score| score.mean_log_probability)
+        .fold(f64::INFINITY, f64::min);
+    let language_max = ranking
+        .rankings
+        .iter()
+        .map(|score| score.mean_log_probability)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let language_range = (language_max - language_min).max(f64::EPSILON);
+    let mut scored = ambiguity
+        .candidates
+        .iter()
+        .enumerate()
+        .filter(|(_, candidate)| !candidate.text.trim().is_empty())
+        .map(|(index, candidate)| {
+            let pass_support = f64::from(u32::try_from(candidate.pass_support).unwrap_or(u32::MAX));
+            let hypothesis_support =
+                f64::from(u32::try_from(candidate.hypothesis_support).unwrap_or(u32::MAX));
+            let best_rank = f64::from(u32::try_from(candidate.best_rank).unwrap_or(u32::MAX));
+            let acoustic = pass_support * 10.0 + hypothesis_support * 2.0 - best_rank * 0.5
+                + candidate
+                    .best_normalized_log_probability
+                    .map_or(0.0, |score| f64::from(score.clamp(-5.0, 0.0)) * 0.1)
+                + candidate
+                    .best_mean_word_probability
+                    .map_or(0.0, |probability| f64::from(probability) * 0.1);
+            let language = ranking
+                .rankings
+                .iter()
+                .find(|score| score.id == index.to_string())
+                .map_or(0.0, |score| {
+                    ((score.mean_log_probability - language_min) / language_range) * 0.75
+                });
+            (index, acoustic + language)
+        })
+        .collect::<Vec<_>>();
+    scored.sort_by(|left, right| right.1.total_cmp(&left.1));
+    let Some(&(selected_index, selected_score)) = scored.first() else {
+        return update;
+    };
+    if ambiguity.candidates[selected_index].pass_support < 2
+        || scored
+            .get(1)
+            .is_some_and(|(_, runner_up)| selected_score - runner_up < 0.25)
+    {
+        return update;
+    }
+
+    let selected = &ambiguity.candidates[selected_index].text;
+    // Keep the immutable committed prefix as the acoustic wording. Surface
+    // normalizations are applied to the complete raw segment at the versioned
+    // final/correction boundary, where their byte offsets remain auditable.
+    match consensus.resolve_ambiguity(selected, selected) {
+        Ok(resolved) => resolved,
+        Err(error) => {
+            tracing::warn!(%error, "language-model selection no longer matches rolling ASR state");
+            update
+        }
+    }
+}
+
+async fn normalize_final_text(
+    state: &AppState,
+    config: &SessionConfig,
+    raw_text: &str,
+) -> (String, Vec<CleanupEdit>) {
+    if config.cleanup_model_id.is_none() || raw_text.trim().is_empty() || raw_text.len() > 1_024 {
+        return (raw_text.to_owned(), Vec::new());
+    }
+    let ranking = match state
+        .inference
+        .rank_candidates(CandidateRankingRequest {
+            session_id: config.session_id,
+            left_context: String::new(),
+            right_context: String::new(),
+            candidates: vec![LanguageCandidate {
+                id: "final".into(),
+                text: raw_text.to_owned(),
+            }],
+            propose_normalizations: true,
+        })
+        .await
+    {
+        Ok(Some(ranking)) => ranking,
+        Ok(None) => return (raw_text.to_owned(), Vec::new()),
+        Err(error) => {
+            tracing::warn!(%error, "final transcript normalization failed; retaining ASR wording");
+            return (raw_text.to_owned(), Vec::new());
+        }
+    };
+    if ranking.normalization_candidate_id.as_deref() != Some("final") {
+        return (raw_text.to_owned(), Vec::new());
+    }
+    let Some(normalized) =
+        apply_normalizations(raw_text, &ranking.normalization_proposals, &config.glossary)
+    else {
+        tracing::warn!("language worker returned invalid final normalization proposals");
+        return (raw_text.to_owned(), Vec::new());
+    };
+    let edits = ranking
+        .normalization_proposals
+        .into_iter()
+        .map(|proposal| CleanupEdit {
+            start_byte: proposal.start_byte,
+            end_byte: proposal.end_byte,
+            replacement: proposal.replacement,
+            reason: format!("{}:{}", proposal.kind, proposal.grounding),
+            source_confidence: 0.0,
+            score_delta_per_token: None,
+        })
+        .collect();
+    (normalized, edits)
+}
+
 async fn transcribe_partial(
     outbound: &mpsc::Sender<Message>,
     state: &AppState,
@@ -506,35 +1057,76 @@ async fn transcribe_partial(
     let Some(config) = session.config.clone() else {
         return Ok(());
     };
+    let (audio, window_start_ms, window_end_ms) = {
+        let (audio, start_ms, end_ms) =
+            rolling_audio_window(&session.audio, state.config.rolling_window_bytes);
+        (audio.to_vec(), start_ms, end_ms)
+    };
+    let prompt_context = session
+        .consensus
+        .as_ref()
+        .map(|consensus| trailing_context(consensus.committed_text(), 512))
+        .filter(|context| !context.is_empty());
     let result = match state
         .inference
         .transcribe(TranscriptionRequest {
             config: config.clone(),
             segment_id: session.segment_id,
-            audio: session.audio.clone(),
+            audio,
             final_segment: false,
+            prompt_context,
         })
         .await
     {
         Ok(result) => result,
         Err(error) => return send_error(outbound, error).await,
     };
+    let pass = consensus_pass(&result, window_start_ms, window_end_ms);
+    let Some(consensus) = session.consensus.as_mut() else {
+        return send_error(
+            outbound,
+            ServerError::Inference("rolling transcript consensus was not initialized".into()),
+        )
+        .await;
+    };
+    let update = match consensus.observe(pass) {
+        Ok(update) => update,
+        Err(error) => {
+            return send_error(
+                outbound,
+                ServerError::Inference(format!("rolling transcript consensus failed: {error}")),
+            )
+            .await;
+        }
+    };
+    let update = arbitrate_mature_ambiguity(state, &config, consensus, update).await;
     session.revision += 1;
     session.sequence += 1;
-    let stable_prefix_bytes = common_utf8_prefix(&session.previous_partial, &result.raw_text);
+    let text = update.best_text();
+    let stable_prefix_bytes = update.committed_text.len();
+    let tokens = result
+        .tokens
+        .into_iter()
+        .map(|mut token| {
+            token.start_ms = token.start_ms.saturating_add(window_start_ms);
+            token.end_ms = token.end_ms.saturating_add(window_start_ms);
+            token
+        })
+        .collect();
     let partial = PartialTranscript {
         session_id: config.session_id,
         segment_id: session.segment_id,
         revision: session.revision,
         sequence: session.sequence,
-        text: result.raw_text.clone(),
+        text: text.clone(),
         stable_prefix_bytes,
-        tokens: result.tokens,
+        tokens,
     };
-    session.previous_partial = result.raw_text;
+    session.previous_partial = text;
     send(outbound, &ServerMessage::Partial(partial)).await
 }
 
+#[allow(clippy::too_many_lines)]
 async fn finalize_segment(
     outbound: &mpsc::Sender<Message>,
     state: &AppState,
@@ -551,13 +1143,24 @@ async fn finalize_segment(
         return Ok(());
     }
     let audio = std::mem::take(&mut session.audio);
+    let (decode_audio, window_start_ms, window_end_ms) = {
+        let (window, start_ms, end_ms) =
+            rolling_audio_window(&audio, state.config.rolling_window_bytes);
+        (window.to_vec(), start_ms, end_ms)
+    };
+    let prompt_context = session
+        .consensus
+        .as_ref()
+        .map(|consensus| trailing_context(consensus.committed_text(), 512))
+        .filter(|context| !context.is_empty());
     let result = match state
         .inference
         .transcribe(TranscriptionRequest {
             config: config.clone(),
             segment_id: session.segment_id,
-            audio: audio.clone(),
+            audio: decode_audio,
             final_segment: true,
+            prompt_context,
         })
         .await
     {
@@ -569,6 +1172,41 @@ async fn finalize_segment(
             return send_error(outbound, error).await;
         }
     };
+    let pass = consensus_pass(&result, window_start_ms, window_end_ms);
+    let Some(consensus) = session.consensus.as_mut() else {
+        session.audio = audio;
+        return send_error(
+            outbound,
+            ServerError::Inference("rolling transcript consensus was not initialized".into()),
+        )
+        .await;
+    };
+    match consensus.observe(pass) {
+        Ok(update) => {
+            let _ = arbitrate_mature_ambiguity(state, &config, consensus, update).await;
+        }
+        Err(error) => {
+            // A commit immediately following an unchanged partial can have the
+            // same live edge. Existing consensus remains safe to finalize.
+            tracing::warn!(%error, "final ASR pass did not advance rolling consensus");
+        }
+    }
+    let final_update = consensus.finalize();
+    let raw_text = if final_update.committed_text.is_empty() {
+        result.raw_text.clone()
+    } else {
+        final_update.committed_text
+    };
+    let (formatted_text, edits) = normalize_final_text(state, &config, &raw_text).await;
+    let tokens = result
+        .tokens
+        .into_iter()
+        .map(|mut token| {
+            token.start_ms = token.start_ms.saturating_add(window_start_ms);
+            token.end_ms = token.end_ms.saturating_add(window_start_ms);
+            token
+        })
+        .collect();
     session.revision += 1;
     session.sequence += 1;
     let final_revision = session.revision;
@@ -579,14 +1217,14 @@ async fn finalize_segment(
             segment_id: session.segment_id,
             revision: final_revision,
             sequence: session.sequence,
-            raw_text: result.raw_text.clone(),
-            formatted_text: result.formatted_text.clone(),
-            tokens: result.tokens,
-            edits: result.edits.clone(),
+            raw_text: raw_text.clone(),
+            formatted_text: formatted_text.clone(),
+            tokens,
+            edits: edits.clone(),
         }),
     )
     .await?;
-    if result.formatted_text != result.raw_text {
+    if formatted_text != raw_text {
         session.revision += 1;
         session.sequence += 1;
         send(
@@ -597,9 +1235,9 @@ async fn finalize_segment(
                 base_revision: final_revision,
                 revision: session.revision,
                 sequence: session.sequence,
-                raw_text_sha256: hex::encode(Sha256::digest(result.raw_text.as_bytes())),
-                replacement: result.formatted_text,
-                edits: result.edits,
+                raw_text_sha256: hex::encode(Sha256::digest(raw_text.as_bytes())),
+                replacement: formatted_text,
+                edits,
             }),
         )
         .await?;
@@ -607,6 +1245,7 @@ async fn finalize_segment(
     session.segment_id += 1;
     session.bytes_at_last_partial = 0;
     session.previous_partial.clear();
+    consensus.reset();
     Ok(())
 }
 

@@ -23,6 +23,12 @@ class Backend {
   // Returns a JSON array of lexical edit objects. Implementations must not
   // classify generated changes as trusted formatting edits.
   virtual std::string propose_edits_json(const std::string& text) = 0;
+  // Returns only exact-span, structured surface-normalization proposals. The
+  // service validates and exposes these as untrusted suggestions; it never
+  // accepts a generated replacement transcript.
+  virtual std::string propose_normalizations_json(const std::string& left_context,
+                                                  const std::string& text,
+                                                  const std::string& right_context) = 0;
 };
 
 std::unique_ptr<Backend> make_backend(const std::string& requested, const std::string& model_path);

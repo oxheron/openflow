@@ -3,7 +3,8 @@ use openflow_protocol::{
     AudioEncoding, ComputeBackend, ModelKind, SessionConfig, TranscriptionRequest,
 };
 use openflow_server::{
-    InferenceEngine, WorkerClient, WorkerInferenceEngine,
+    CandidateRankingRequest, InferenceEngine, LanguageCandidate, WorkerClient,
+    WorkerInferenceEngine,
     inference::{pcm_s16le_base64, pcm_s16le_diagnostics},
 };
 use serde_json::json;
@@ -93,6 +94,7 @@ async fn actual_workers_complete_a_mock_session() {
             segment_id: 0,
             audio: vec![0; 640],
             final_segment: false,
+            prompt_context: None,
         })
         .await
         .unwrap();
@@ -103,10 +105,36 @@ async fn actual_workers_complete_a_mock_session() {
             segment_id: 0,
             audio: vec![0; 1_280],
             final_segment: true,
+            prompt_context: Some("previously committed".into()),
         })
         .await
         .unwrap();
     assert_eq!(final_result.raw_text, final_result.formatted_text);
+    let ranking = engine
+        .rank_candidates(CandidateRankingRequest {
+            session_id,
+            left_context: "We use ".into(),
+            right_context: " for training.".into(),
+            candidates: vec![
+                LanguageCandidate {
+                    id: "clean".into(),
+                    text: "PyTorch".into(),
+                },
+                LanguageCandidate {
+                    id: "duplicate".into(),
+                    text: "PyTorch PyTorch".into(),
+                },
+            ],
+            propose_normalizations: true,
+        })
+        .await
+        .unwrap()
+        .expect("configured mock LLM");
+    assert_eq!(ranking.rankings.len(), 2);
+    assert_eq!(ranking.rankings[0].id, "clean");
+    assert_eq!(ranking.normalization_candidate_id.as_deref(), Some("clean"));
+    assert!(ranking.normalization_proposals.is_empty());
+    engine.cancel_session(session_id).await;
     engine.unload_model(ModelKind::TextCleanup).await.unwrap();
     engine.prepare_models("mock", None).await.unwrap();
 }

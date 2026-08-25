@@ -121,6 +121,10 @@ def check_asr(executable: Path) -> None:
         )
     )
     assert compatibility_result["text"] == " hello world"
+    assert compatibility_result["hypotheses"][0]["text"] == " hello world"
+    assert len(compatibility_result["hypotheses"][0]["tokens"]) == 2
+    assert len(compatibility_result["hypotheses"][0]["segments"]) == 1
+    assert compatibility_result["hypotheses"][0]["mean_log_probability"] < 0.0
     result = require_ok(
         worker.call(
             "transcribe",
@@ -136,6 +140,7 @@ def check_asr(executable: Path) -> None:
     assert result["text"] == " hello world"
     assert result["language"] == "en"
     assert len(result["tokens"]) == 2
+    assert result["hypotheses"][0]["text"] == result["text"]
     require_ok(worker.call("end_session", {"session_id": "asr-test"}))
     worker.close()
 
@@ -163,6 +168,61 @@ def check_llm(executable: Path) -> None:
     assert result["original_text"] == "hello hello"
     assert isinstance(result["text"], str)
     assert isinstance(result["decisions"], list)
+
+    ranked = require_ok(
+        worker.call(
+            "rank_candidates",
+            {
+                "session_id": "llm-test",
+                "left_context": "we use ",
+                "right_context": " today.",
+                "candidates": [
+                    {"id": "supported", "text": "tools"},
+                    {"id": "repetition", "text": "use"},
+                ],
+                "propose_normalizations": True,
+            },
+        )
+    )
+    assert [item["id"] for item in ranked["rankings"]] == ["supported", "repetition"]
+    assert all(item["token_count"] > 0 for item in ranked["rankings"])
+    assert all(isinstance(item["mean_log_probability"], float) for item in ranked["rankings"])
+    assert ranked["normalization"] == {
+        "candidate_id": "supported",
+        "proposals": [],
+    }
+    assert "text" not in ranked
+
+    duplicate_ids = worker.call(
+        "rank_candidates",
+        {
+            "session_id": "llm-test",
+            "candidates": [
+                {"id": "same", "text": "one"},
+                {"id": "same", "text": "two"},
+            ],
+        },
+    )
+    assert duplicate_ids["ok"] is False
+    assert duplicate_ids["error"]["code"] == "invalid_request"
+
+    normalization_via_cleanup = worker.call(
+        "cleanup",
+        {
+            "session_id": "llm-test",
+            "text": "pie torch",
+            "candidates": [
+                {
+                    "start_byte": 0,
+                    "end_byte": 9,
+                    "replacement": "PyTorch",
+                    "kind": "canonical_name",
+                }
+            ],
+        },
+    )
+    assert normalization_via_cleanup["ok"] is False
+    assert normalization_via_cleanup["error"]["code"] == "invalid_request"
     require_ok(worker.call("end_session", {"session_id": "llm-test"}))
     worker.close()
 

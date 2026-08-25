@@ -28,10 +28,19 @@ struct Segment {
   std::vector<Token> tokens;
 };
 
+struct Hypothesis {
+  std::string text;
+  double score{0.0};
+  double mean_log_probability{0.0};
+  std::vector<Token> tokens;
+  std::vector<Segment> segments;
+};
+
 struct Transcription {
   std::string text;
   std::string language;
   std::vector<Segment> segments;
+  std::vector<Hypothesis> hypotheses;
 };
 
 class Backend {

@@ -1,0 +1,116 @@
+diff --git a/include/whisper.h b/include/whisper.h
+index 605660d..1f7fb52 100644
+--- a/include/whisper.h
++++ b/include/whisper.h
+@@ -482,5 +482,26 @@ extern "C" {
+                               void * user_data);
+ 
++    // A completed decoder hypothesis. The token pointer remains valid only for
++    // the duration of whisper_nbest_callback.
++    typedef struct whisper_nbest_hypothesis {
++        const whisper_token_data * tokens;
++        int n_tokens;
++        double sum_logprobs;
++        double avg_logprobs;
++        double score;
++        int64_t t0_ms;
++        int64_t t1_ms;
++    } whisper_nbest_hypothesis;
++
++    // Called with the unique completed hypotheses from the selected decoding
++    // temperature, ordered by decoder score with the selected result first.
++    typedef void (*whisper_nbest_callback)(
++            struct whisper_context * ctx,
++              struct whisper_state * state,
++        const whisper_nbest_hypothesis * hypotheses,
++                               int n_hypotheses,
++                              void * user_data);
++
+     // Parameters for the whisper_full() function
+     // If you change the order or add new parameters, make sure to update the default values in whisper.cpp:
+     // whisper_full_default_params()
+@@ -580,6 +598,10 @@ extern "C" {
+         whisper_logits_filter_callback logits_filter_callback;
+         void * logits_filter_callback_user_data;
+ 
++        // called after completed decoder hypotheses are ranked
++        whisper_nbest_callback nbest_callback;
++        void * nbest_callback_user_data;
++
+         const whisper_grammar_element ** grammar_rules;
+         size_t                           n_grammar_rules;
+         size_t                           i_start_rule;
+diff --git a/src/whisper.cpp b/src/whisper.cpp
+index 4dd85f3..c28c2ab 100644
+--- a/src/whisper.cpp
++++ b/src/whisper.cpp
+@@ -6009,6 +6009,9 @@ struct whisper_full_params whisper_full_default_params(enum whisper_sampling_st
+         /*.logits_filter_callback           =*/ nullptr,
+         /*.logits_filter_callback_user_data =*/ nullptr,
+ 
++        /*.nbest_callback                   =*/ nullptr,
++        /*.nbest_callback_user_data         =*/ nullptr,
++
+         /*.grammar_rules   =*/ nullptr,
+         /*.n_grammar_rules =*/ 0,
+         /*.i_start_rule    =*/ 0,
+@@ -7578,6 +7581,59 @@ int whisper_full_with_state(
+             }
+ 
+             if (success) {
++                if (params.nbest_callback != nullptr) {
++                    std::vector<int> ranked_decoders;
++                    ranked_decoders.reserve(n_decoders_cur);
++                    for (int j = 0; j < n_decoders_cur; ++j) {
++                        const auto & decoder = state->decoders[j];
++                        if (!decoder.failed && decoder.sequence.result_len > 0) {
++                            ranked_decoders.push_back(j);
++                        }
++                    }
++                    std::stable_sort(
++                            ranked_decoders.begin(), ranked_decoders.end(),
++                            [state](int lhs, int rhs) {
++                                return state->decoders[lhs].sequence.score >
++                                       state->decoders[rhs].sequence.score;
++                            });
++
++                    std::vector<int> unique_decoders;
++                    unique_decoders.reserve(ranked_decoders.size());
++                    for (const int decoder_index : ranked_decoders) {
++                        const auto & sequence = state->decoders[decoder_index].sequence;
++                        const bool duplicate = std::any_of(
++                                unique_decoders.begin(), unique_decoders.end(),
++                                [state, &sequence](int accepted_index) {
++                                    return whisper_sequence_tokens_equal(
++                                            sequence,
++                                            state->decoders[accepted_index].sequence);
++                                });
++                        if (!duplicate) {
++                            unique_decoders.push_back(decoder_index);
++                        }
++                    }
++
++                    std::vector<whisper_nbest_hypothesis> hypotheses;
++                    hypotheses.reserve(unique_decoders.size());
++                    for (const int decoder_index : unique_decoders) {
++                        const auto & decoder = state->decoders[decoder_index];
++                        const auto & sequence = decoder.sequence;
++                        hypotheses.push_back({
++                            sequence.tokens.data(),
++                            sequence.result_len,
++                            sequence.sum_logprobs,
++                            sequence.avg_logprobs,
++                            sequence.score,
++                            static_cast<int64_t>(seek) * 10,
++                            static_cast<int64_t>(std::min(seek + decoder.seek_delta, seek_end)) * 10,
++                        });
++                    }
++                    if (!hypotheses.empty()) {
++                        params.nbest_callback(
++                                ctx, state, hypotheses.data(), static_cast<int>(hypotheses.size()),
++                                params.nbest_callback_user_data);
++                    }
++                }
+                 //for (auto & token : ctx->decoders[best_decoder_id].sequence.tokens) {
+                 //    WHISPER_LOG_DEBUG("%s: token = %d, p = %6.3f, pt = %6.3f, ts = %s, str = %s\n", __func__, token.id, token.p, token.pt, ctx->vocab.id_to_token.at(token.tid).c_str(), ctx->vocab.id_to_token.at(token.id).c_str());
+                 //}
