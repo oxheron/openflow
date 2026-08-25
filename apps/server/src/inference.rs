@@ -621,6 +621,13 @@ impl WorkerInferenceEngine {
                 ServerError::BadRequest("an asr_model_id is required for native inference".into())
             })?;
         let llm_model = request.config.cleanup_model_id.as_deref();
+        if request.final_segment && self.print_transcripts {
+            print_audio_diagnostics(
+                request.config.session_id,
+                request.segment_id,
+                &pcm_s16le_diagnostics(&request.audio),
+            );
+        }
         if llm_model.is_some() && self.llm.is_none() {
             return Err(ServerError::Configuration(
                 "a cleanup model was selected, but no LLM worker is configured".into(),
@@ -944,6 +951,13 @@ fn print_raw_transcript(session_id: Uuid, segment_id: u64, raw: &str) {
     eprintln!();
 }
 
+fn print_audio_diagnostics(session_id: Uuid, segment_id: u64, audio: &PcmDiagnostics) {
+    eprintln!(
+        "OpenFlow audio · session {session_id} · segment {segment_id}: {} samples, {} ms, RMS {:.5}, peak {:.5}, {:.1}% nonzero",
+        audio.sample_count, audio.duration_ms, audio.rms, audio.peak, audio.nonzero_percent,
+    );
+}
+
 fn print_cleanup_result(session_id: Uuid, segment_id: u64, raw: &str, formatted: &str) {
     if formatted == raw {
         eprintln!(
@@ -974,6 +988,54 @@ pub fn terminal_safe_transcript(text: &str) -> String {
             }
         })
         .collect()
+}
+
+/// Summary of a final PCM segment printed by the foreground diagnostic host.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[doc(hidden)]
+pub struct PcmDiagnostics {
+    pub sample_count: usize,
+    pub duration_ms: u64,
+    pub rms: f64,
+    pub peak: f64,
+    pub nonzero_percent: f64,
+}
+
+/// Calculates signal diagnostics for 16 kHz mono PCM S16LE without retaining audio.
+#[doc(hidden)]
+pub fn pcm_s16le_diagnostics(bytes: &[u8]) -> PcmDiagnostics {
+    let mut square_sum = 0.0;
+    let mut peak = 0.0_f64;
+    let mut sample_count = 0_usize;
+    let mut nonzero_count_f64 = 0.0_f64;
+    let mut sample_count_f64 = 0.0_f64;
+    for bytes in bytes.chunks_exact(2) {
+        let sample = f64::from(i16::from_le_bytes([bytes[0], bytes[1]])) / 32768.0;
+        square_sum += sample * sample;
+        peak = peak.max(sample.abs());
+        if sample != 0.0 {
+            nonzero_count_f64 += 1.0;
+        }
+        sample_count += 1;
+        sample_count_f64 += 1.0;
+    }
+    let rms = if sample_count == 0 {
+        0.0
+    } else {
+        (square_sum / sample_count_f64).sqrt()
+    };
+    let nonzero_percent = if sample_count == 0 {
+        0.0
+    } else {
+        nonzero_count_f64 * 100.0 / sample_count_f64
+    };
+    PcmDiagnostics {
+        sample_count,
+        duration_ms: u64::try_from(sample_count).unwrap_or(u64::MAX) * 1000 / 16_000,
+        rms,
+        peak,
+        nonzero_percent,
+    }
 }
 
 /// Validates and encodes PCM for the compact native-worker transport.

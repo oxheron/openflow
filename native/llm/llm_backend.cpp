@@ -241,10 +241,8 @@ ws ::= | " " | "\n" [ \t]{0,8}
       for (std::size_t generated = 0; generated < kMaximumGeneratedTokens; ++generated) {
         const llama_token token = llama_sampler_sample(sampler, context_, -1);
         if (llama_vocab_is_eog(vocabulary, token)) break;
-        // Grammar and chained sampler state advance only when the sampled token
-        // is explicitly accepted. Without this, every step is constrained as
-        // though it were still the first byte of the JSON document.
-        llama_sampler_accept(sampler, token);
+        // llama_sampler_sample advances every sampler in the chain, including
+        // the grammar. Accepting the token again corrupts that grammar state.
         std::vector<char> piece(64);
         int piece_size = llama_token_to_piece(vocabulary, token, piece.data(),
                                               static_cast<int32_t>(piece.size()), 0, true);

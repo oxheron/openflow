@@ -3,7 +3,8 @@ use openflow_protocol::{
     AudioEncoding, ComputeBackend, ModelKind, SessionConfig, TranscriptionRequest,
 };
 use openflow_server::{
-    InferenceEngine, WorkerClient, WorkerInferenceEngine, inference::pcm_s16le_base64,
+    InferenceEngine, WorkerClient, WorkerInferenceEngine,
+    inference::{pcm_s16le_base64, pcm_s16le_diagnostics},
 };
 use serde_json::json;
 use std::{collections::BTreeMap, path::PathBuf};
@@ -17,6 +18,20 @@ fn encodes_complete_pcm_samples_compactly() {
         [0, 0, 0xff, 0x7f, 0, 0x80]
     );
     assert!(pcm_s16le_base64(AudioEncoding::PcmS16Le, &[0]).is_err());
+}
+
+#[test]
+fn summarizes_pcm_signal_without_retaining_audio() {
+    let audio = [0_i16, 16_384, -16_384, i16::MAX]
+        .into_iter()
+        .flat_map(i16::to_le_bytes)
+        .collect::<Vec<_>>();
+    let diagnostics = pcm_s16le_diagnostics(&audio);
+    assert_eq!(diagnostics.sample_count, 4);
+    assert_eq!(diagnostics.duration_ms, 0);
+    assert!((diagnostics.rms - 0.61236).abs() < 0.0001);
+    assert!((diagnostics.peak - 0.99997).abs() < 0.0001);
+    assert!((diagnostics.nonzero_percent - 75.0).abs() < f64::EPSILON);
 }
 
 #[tokio::test]
