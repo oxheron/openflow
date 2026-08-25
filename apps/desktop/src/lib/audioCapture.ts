@@ -1,3 +1,39 @@
+export interface PcmFrameMetrics {
+  samples: number;
+  nonZeroRatio: number;
+  peak: number;
+  rms: number;
+}
+
+export interface AudioCaptureDiagnostics {
+  phase: "requesting" | "capturing" | "stopped";
+  trackState: MediaStreamTrackState | "unavailable";
+  trackMuted: boolean;
+  contextState: AudioContextState | "unavailable";
+  frameCount: number;
+  frame: PcmFrameMetrics | null;
+}
+
+export function inspectPcmFrame(frame: ArrayBuffer): PcmFrameMetrics {
+  const samples = new Int16Array(frame);
+  let nonZeroSamples = 0;
+  let peak = 0;
+  let sumSquares = 0;
+  for (const sample of samples) {
+    if (sample !== 0) nonZeroSamples += 1;
+    const normalized = sample / 32768;
+    const magnitude = Math.abs(normalized);
+    if (magnitude > peak) peak = magnitude;
+    sumSquares += normalized * normalized;
+  }
+  return {
+    samples: samples.length,
+    nonZeroRatio: samples.length ? nonZeroSamples / samples.length : 0,
+    peak,
+    rms: samples.length ? Math.sqrt(sumSquares / samples.length) : 0,
+  };
+}
+
 export class PcmAudioCapture {
   private stream: MediaStream | null = null;
   private context: AudioContext | null = null;
@@ -7,24 +43,75 @@ export class PcmAudioCapture {
   private onFrame: ((frame: ArrayBuffer) => void) | null = null;
   private flushComplete: (() => void) | null = null;
   private stopPromise: Promise<void> | null = null;
+  private preparePromise: Promise<MediaStream> | null = null;
+  private onDiagnostics: ((diagnostics: AudioCaptureDiagnostics) => void) | null = null;
+  private diagnostics: AudioCaptureDiagnostics = {
+    phase: "stopped",
+    trackState: "unavailable",
+    trackMuted: false,
+    contextState: "unavailable",
+    frameCount: 0,
+    frame: null,
+  };
+  private lastDiagnosticAt = 0;
 
-  async start(onFrame: (frame: ArrayBuffer) => void): Promise<void> {
-    if (this.stream) throw new Error("Microphone capture is already active");
+  async prepare(onDiagnostics?: (diagnostics: AudioCaptureDiagnostics) => void): Promise<void> {
+    if (!navigator.mediaDevices?.getUserMedia)
+      throw new Error("Microphone capture is unavailable in this runtime");
+    if (onDiagnostics) this.onDiagnostics = onDiagnostics;
+    this.diagnostics = {
+      phase: "requesting",
+      trackState: this.liveTrack()?.readyState ?? "unavailable",
+      trackMuted: this.liveTrack()?.muted ?? false,
+      contextState: "unavailable",
+      frameCount: 0,
+      frame: null,
+    };
+    this.publishDiagnostics();
+
+    const stream = await this.preparedStream();
+    for (const track of stream.getAudioTracks()) track.enabled = false;
+    const track = stream.getAudioTracks()[0];
+    this.diagnostics = {
+      ...this.diagnostics,
+      phase: "stopped",
+      trackState: track?.readyState ?? "unavailable",
+      trackMuted: track?.muted ?? false,
+    };
+    this.publishDiagnostics();
+  }
+
+  async start(
+    onFrame: (frame: ArrayBuffer) => void,
+    onDiagnostics?: (diagnostics: AudioCaptureDiagnostics) => void,
+  ): Promise<void> {
+    if (this.context) throw new Error("Microphone capture is already active");
     if (!navigator.mediaDevices?.getUserMedia)
       throw new Error("Microphone capture is unavailable in this runtime");
 
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        channelCount: 1,
-        sampleRate: { ideal: 48_000 },
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-      },
-    });
+    this.onDiagnostics = onDiagnostics ?? null;
+    this.diagnostics = {
+      phase: "requesting",
+      trackState: this.liveTrack()?.readyState ?? "unavailable",
+      trackMuted: this.liveTrack()?.muted ?? false,
+      contextState: "unavailable",
+      frameCount: 0,
+      frame: null,
+    };
+    this.publishDiagnostics();
+
+    const stream = await this.preparedStream();
+    for (const track of stream.getAudioTracks()) track.enabled = true;
 
     try {
-      const trackRate = stream.getAudioTracks()[0]?.getSettings().sampleRate;
+      const track = stream.getAudioTracks()[0];
+      const trackRate = track?.getSettings().sampleRate;
+      this.diagnostics = {
+        ...this.diagnostics,
+        trackState: track?.readyState ?? "unavailable",
+        trackMuted: track?.muted ?? false,
+      };
+      this.publishDiagnostics();
       const inputSampleRate =
         typeof trackRate === "number" &&
         Number.isFinite(trackRate) &&
@@ -49,6 +136,20 @@ export class PcmAudioCapture {
       this.onFrame = onFrame;
       node.port.onmessage = (event: MessageEvent<unknown>) => {
         if (event.data instanceof ArrayBuffer) {
+          this.diagnostics = {
+            ...this.diagnostics,
+            phase: "capturing",
+            trackState: track?.readyState ?? "unavailable",
+            trackMuted: track?.muted ?? false,
+            contextState: context.state,
+            frameCount: this.diagnostics.frameCount + 1,
+            frame: inspectPcmFrame(event.data),
+          };
+          const now = Date.now();
+          if (this.diagnostics.frameCount === 1 || now - this.lastDiagnosticAt >= 500) {
+            this.lastDiagnosticAt = now;
+            this.publishDiagnostics();
+          }
           this.onFrame?.(event.data);
         } else if (
           typeof event.data === "object" &&
@@ -61,13 +162,19 @@ export class PcmAudioCapture {
       };
       source.connect(node).connect(sink).connect(context.destination);
       await context.resume();
+      this.diagnostics = {
+        ...this.diagnostics,
+        phase: "capturing",
+        contextState: context.state,
+      };
+      this.publishDiagnostics();
       this.stream = stream;
       this.context = context;
       this.node = node;
       this.source = source;
       this.sink = sink;
     } catch (error) {
-      for (const track of stream.getTracks()) track.stop();
+      for (const track of stream.getAudioTracks()) track.enabled = false;
       throw error;
     }
   }
@@ -105,13 +212,63 @@ export class PcmAudioCapture {
     node?.disconnect();
     this.source?.disconnect();
     this.sink?.disconnect();
-    for (const track of this.stream?.getTracks() ?? []) track.stop();
+    for (const track of this.stream?.getAudioTracks() ?? []) track.enabled = false;
     await this.context?.close();
-    this.stream = null;
     this.context = null;
     this.node = null;
     this.source = null;
     this.sink = null;
+    this.diagnostics = {
+      ...this.diagnostics,
+      phase: "stopped",
+      trackState: this.liveTrack()?.readyState ?? "unavailable",
+      trackMuted: this.liveTrack()?.muted ?? false,
+      contextState: "unavailable",
+    };
+    this.publishDiagnostics();
+    this.onDiagnostics = null;
+  }
+
+  async dispose(): Promise<void> {
+    await this.stop();
+    for (const track of this.stream?.getTracks() ?? []) track.stop();
+    this.stream = null;
+    this.preparePromise = null;
+  }
+
+  private liveTrack(): MediaStreamTrack | undefined {
+    return this.stream?.getAudioTracks().find((track) => track.readyState === "live");
+  }
+
+  private async preparedStream(): Promise<MediaStream> {
+    if (this.liveTrack() && this.stream) return this.stream;
+    if (!this.preparePromise) {
+      this.preparePromise = navigator.mediaDevices
+        .getUserMedia({
+          audio: {
+            channelCount: 1,
+            sampleRate: { ideal: 48_000 },
+            echoCancellation: true,
+            noiseSuppression: true,
+            autoGainControl: true,
+          },
+        })
+        .then((stream) => {
+          this.stream = stream;
+          return stream;
+        })
+        .finally(() => {
+          this.preparePromise = null;
+        });
+    }
+    return this.preparePromise;
+  }
+
+  private publishDiagnostics(): void {
+    this.onDiagnostics?.({
+      ...this.diagnostics,
+      frame: this.diagnostics.frame ? { ...this.diagnostics.frame } : null,
+    });
   }
 }
 
