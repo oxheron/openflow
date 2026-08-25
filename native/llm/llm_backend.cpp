@@ -171,12 +171,12 @@ class LlamaBackend final : public Backend {
   std::string propose_edits_json(const std::string& text) override {
     require_loaded();
     static constexpr const char* kGrammar = R"gbnf(
-root ::= ws "[" ws (edit (ws "," ws edit)*)? ws "]" ws
+root ::= ws "[" ws (edit (ws "," ws edit){0,7})? ws "]" ws
 edit ::= "{" ws "\"start_byte\"" ws ":" ws integer ws "," ws "\"end_byte\"" ws ":" ws integer ws "," ws "\"source\"" ws ":" ws string ws "," ws "\"replacement\"" ws ":" ws string ws "}"
-integer ::= "0" | [1-9] [0-9]*
-string ::= "\"" character* "\""
+integer ::= "0" | [1-9] [0-9]{0,8}
+string ::= "\"" character{0,128} "\""
 character ::= [^"\\\x00-\x1F] | "\\" (["\\/bfnrt] | "u" [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F] [0-9a-fA-F])
-ws ::= [ \t\n\r]*
+ws ::= | " " | "\n" [ \t]{0,8}
 )gbnf";
 
     const std::string prompt =
@@ -237,13 +237,12 @@ ws ::= [ \t\n\r]*
       bool in_string = false;
       bool escaped = false;
       bool saw_array = false;
+      bool completed = false;
       for (std::size_t generated = 0; generated < kMaximumGeneratedTokens; ++generated) {
         const llama_token token = llama_sampler_sample(sampler, context_, -1);
         if (llama_vocab_is_eog(vocabulary, token)) break;
-        // Grammar and chained sampler state advance only when the sampled token
-        // is explicitly accepted. Without this, every step is constrained as
-        // though it were still the first byte of the JSON document.
-        llama_sampler_accept(sampler, token);
+        // llama_sampler_sample advances every sampler in the chain, including
+        // the grammar. Accepting the token again corrupts that grammar state.
         std::vector<char> piece(64);
         int piece_size = llama_token_to_piece(vocabulary, token, piece.data(),
                                               static_cast<int32_t>(piece.size()), 0, true);
@@ -270,7 +269,10 @@ ws ::= [ \t\n\r]*
             --bracket_depth;
           }
         }
-        if (saw_array && bracket_depth == 0 && !in_string) break;
+        if (saw_array && bracket_depth == 0 && !in_string) {
+          completed = true;
+          break;
+        }
 
         llama_batch next = llama_batch_init(1, 0, 1);
         next.n_tokens = 1;
@@ -283,6 +285,7 @@ ws ::= [ \t\n\r]*
         llama_batch_free(next);
         if (decode_result != 0) throw std::runtime_error("llama.cpp generation decode failed");
       }
+      if (!completed) output = "[]";
     } catch (...) {
       llama_batch_free(batch);
       llama_sampler_free(sampler);

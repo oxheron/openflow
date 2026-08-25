@@ -79,7 +79,10 @@ class WhisperBackend final : public Backend {
     parameters.single_segment = !request.final;
     parameters.n_threads = static_cast<int>(std::max(1U, std::thread::hardware_concurrency()));
     parameters.language = request.language.c_str();
-    parameters.detect_language = request.language == "auto";
+    // In whisper.cpp, a language value of "auto" detects the language and then
+    // continues decoding. The detect_language flag is a detection-only mode
+    // that returns before transcription, so it must remain disabled here.
+    parameters.detect_language = false;
     if (!request.initial_prompt.empty()) parameters.initial_prompt = request.initial_prompt.c_str();
     if (whisper_full(context_, parameters, request.samples.data(),
                      static_cast<int>(request.samples.size())) != 0) {

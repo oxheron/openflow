@@ -430,6 +430,7 @@ pub struct WorkerInferenceEngine {
     model_cache_dir: PathBuf,
     backend: String,
     compute_backends: Vec<ComputeBackend>,
+    print_transcripts: bool,
     state: Mutex<WorkerEngineState>,
 }
 
@@ -481,6 +482,7 @@ impl WorkerInferenceEngine {
         llm_path: Option<&Path>,
         model_cache_dir: PathBuf,
         backend: String,
+        print_transcripts: bool,
     ) -> Result<Self, ServerError> {
         let asr =
             Arc::new(WorkerClient::spawn_checked(asr_path, Some("openflow-asr-worker")).await?);
@@ -528,6 +530,7 @@ impl WorkerInferenceEngine {
             model_cache_dir,
             backend,
             compute_backends,
+            print_transcripts,
             state: Mutex::new(WorkerEngineState::default()),
         })
     }
@@ -618,6 +621,13 @@ impl WorkerInferenceEngine {
                 ServerError::BadRequest("an asr_model_id is required for native inference".into())
             })?;
         let llm_model = request.config.cleanup_model_id.as_deref();
+        if request.final_segment && self.print_transcripts {
+            print_audio_diagnostics(
+                request.config.session_id,
+                request.segment_id,
+                &pcm_s16le_diagnostics(&request.audio),
+            );
+        }
         if llm_model.is_some() && self.llm.is_none() {
             return Err(ServerError::Configuration(
                 "a cleanup model was selected, but no LLM worker is configured".into(),
@@ -655,6 +665,9 @@ impl WorkerInferenceEngine {
             )
             .await?;
         let asr: AsrResult = serde_json::from_value(response)?;
+        if request.final_segment && self.print_transcripts {
+            print_raw_transcript(request.config.session_id, request.segment_id, &asr.text);
+        }
         let tokens: Vec<TokenEvidence> = if asr.segments.is_empty() {
             asr.tokens
                 .into_iter()
@@ -751,6 +764,15 @@ impl WorkerInferenceEngine {
         } else {
             (asr.text.clone(), Vec::new())
         };
+
+        if request.final_segment && self.print_transcripts {
+            print_cleanup_result(
+                request.config.session_id,
+                request.segment_id,
+                &asr.text,
+                &formatted_text,
+            );
+        }
 
         if request.final_segment {
             let llm_started = worker_session.llm_started;
@@ -917,6 +939,103 @@ fn decode_compute_backends(values: &[String]) -> Vec<ComputeBackend> {
 
 fn is_worker_transport_failure(error: &ServerError) -> bool {
     matches!(error, ServerError::Inference(message) if message.starts_with(WORKER_TRANSPORT_PREFIX))
+}
+
+fn print_raw_transcript(session_id: Uuid, segment_id: u64, raw: &str) {
+    eprintln!();
+    eprintln!(
+        "========== OpenFlow raw transcript · session {session_id} · segment {segment_id} =========="
+    );
+    eprintln!("{}", terminal_safe_transcript(raw));
+    eprintln!("================================================================================");
+    eprintln!();
+}
+
+fn print_audio_diagnostics(session_id: Uuid, segment_id: u64, audio: &PcmDiagnostics) {
+    eprintln!(
+        "OpenFlow audio · session {session_id} · segment {segment_id}: {} samples, {} ms, RMS {:.5}, peak {:.5}, {:.1}% nonzero",
+        audio.sample_count, audio.duration_ms, audio.rms, audio.peak, audio.nonzero_percent,
+    );
+}
+
+fn print_cleanup_result(session_id: Uuid, segment_id: u64, raw: &str, formatted: &str) {
+    if formatted == raw {
+        eprintln!(
+            "OpenFlow cleanup · session {session_id} · segment {segment_id}: unchanged or unavailable"
+        );
+        return;
+    }
+    eprintln!();
+    eprintln!(
+        "========== OpenFlow cleaned transcript · session {session_id} · segment {segment_id} =========="
+    );
+    eprintln!("{}", terminal_safe_transcript(formatted));
+    eprintln!(
+        "===================================================================================="
+    );
+    eprintln!();
+}
+
+/// Removes terminal control characters from model text before foreground display.
+#[doc(hidden)]
+pub fn terminal_safe_transcript(text: &str) -> String {
+    text.chars()
+        .map(|character| {
+            if character == '\n' || character == '\t' || !character.is_control() {
+                character
+            } else {
+                '\u{fffd}'
+            }
+        })
+        .collect()
+}
+
+/// Summary of a final PCM segment printed by the foreground diagnostic host.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[doc(hidden)]
+pub struct PcmDiagnostics {
+    pub sample_count: usize,
+    pub duration_ms: u64,
+    pub rms: f64,
+    pub peak: f64,
+    pub nonzero_percent: f64,
+}
+
+/// Calculates signal diagnostics for 16 kHz mono PCM S16LE without retaining audio.
+#[doc(hidden)]
+pub fn pcm_s16le_diagnostics(bytes: &[u8]) -> PcmDiagnostics {
+    let mut square_sum = 0.0;
+    let mut peak = 0.0_f64;
+    let mut sample_count = 0_usize;
+    let mut nonzero_count_f64 = 0.0_f64;
+    let mut sample_count_f64 = 0.0_f64;
+    for bytes in bytes.chunks_exact(2) {
+        let sample = f64::from(i16::from_le_bytes([bytes[0], bytes[1]])) / 32768.0;
+        square_sum += sample * sample;
+        peak = peak.max(sample.abs());
+        if sample != 0.0 {
+            nonzero_count_f64 += 1.0;
+        }
+        sample_count += 1;
+        sample_count_f64 += 1.0;
+    }
+    let rms = if sample_count == 0 {
+        0.0
+    } else {
+        (square_sum / sample_count_f64).sqrt()
+    };
+    let nonzero_percent = if sample_count == 0 {
+        0.0
+    } else {
+        nonzero_count_f64 * 100.0 / sample_count_f64
+    };
+    PcmDiagnostics {
+        sample_count,
+        duration_ms: u64::try_from(sample_count).unwrap_or(u64::MAX) * 1000 / 16_000,
+        rms,
+        peak,
+        nonzero_percent,
+    }
 }
 
 /// Validates and encodes PCM for the compact native-worker transport.

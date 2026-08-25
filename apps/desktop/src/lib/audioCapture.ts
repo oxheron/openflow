@@ -16,6 +16,7 @@ export class PcmAudioCapture {
     const stream = await navigator.mediaDevices.getUserMedia({
       audio: {
         channelCount: 1,
+        sampleRate: { ideal: 48_000 },
         echoCancellation: true,
         noiseSuppression: true,
         autoGainControl: true,
@@ -23,13 +24,25 @@ export class PcmAudioCapture {
     });
 
     try {
-      const context = new AudioContext({ latencyHint: "interactive" });
+      const trackRate = stream.getAudioTracks()[0]?.getSettings().sampleRate;
+      const inputSampleRate =
+        typeof trackRate === "number" &&
+        Number.isFinite(trackRate) &&
+        trackRate >= 8_000 &&
+        trackRate <= 96_000
+          ? trackRate
+          : 48_000;
+      // An explicit context rate avoids a WebKit/macOS mismatch where the
+      // output device reports a telephony rate while microphone render quanta
+      // still arrive at 48 kHz, which otherwise produces audio about 3x fast.
+      const context = new AudioContext({ latencyHint: "interactive", sampleRate: inputSampleRate });
       await context.audioWorklet.addModule("/pcm-capture-worklet.js");
       const source = context.createMediaStreamSource(stream);
       const node = new AudioWorkletNode(context, "openflow-pcm-capture", {
         numberOfInputs: 1,
         numberOfOutputs: 1,
         channelCount: 1,
+        processorOptions: { inputSampleRate: context.sampleRate },
       });
       const sink = context.createGain();
       sink.gain.value = 0;
@@ -103,7 +116,7 @@ export class PcmAudioCapture {
 }
 
 export interface SpeechBoundaryOptions {
-  frameDurationMs: number;
+  sampleRateHz: number;
   minimumSpeechMs: number;
   trailingSilenceMs: number;
   minimumThreshold: number;
@@ -111,7 +124,7 @@ export interface SpeechBoundaryOptions {
 }
 
 const defaultBoundaryOptions: SpeechBoundaryOptions = {
-  frameDurationMs: 20,
+  sampleRateHz: 16_000,
   minimumSpeechMs: 160,
   trailingSilenceMs: 900,
   minimumThreshold: 0.012,
@@ -133,6 +146,7 @@ export class SpeechBoundaryDetector {
   process(frame: ArrayBuffer): boolean {
     const samples = new Int16Array(frame);
     if (!samples.length) return false;
+    const frameDurationMs = (samples.length * 1000) / this.options.sampleRateHz;
     let sum = 0;
     for (const sample of samples) {
       const normalized = sample / 32768;
@@ -143,7 +157,7 @@ export class SpeechBoundaryDetector {
     const voiced = rms >= threshold;
 
     if (voiced) {
-      this.speechMs += this.options.frameDurationMs;
+      this.speechMs += frameDurationMs;
       this.silenceMs = 0;
       if (this.speechMs >= this.options.minimumSpeechMs) this.speechConfirmed = true;
       return false;
@@ -151,11 +165,11 @@ export class SpeechBoundaryDetector {
 
     if (!this.speechConfirmed) {
       this.noiseFloor = this.noiseFloor * 0.96 + rms * 0.04;
-      this.speechMs = Math.max(0, this.speechMs - this.options.frameDurationMs);
+      this.speechMs = Math.max(0, this.speechMs - frameDurationMs);
       return false;
     }
 
-    this.silenceMs += this.options.frameDurationMs;
+    this.silenceMs += frameDurationMs;
     if (this.silenceMs < this.options.trailingSilenceMs) return false;
     this.speechMs = 0;
     this.silenceMs = 0;

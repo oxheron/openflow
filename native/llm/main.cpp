@@ -126,7 +126,7 @@ std::vector<EditCandidate> generated_proposals(Backend& backend, const std::stri
   try {
     const Value document = json::parse(encoded);
     const auto& array = document.as_array();
-    if (array.size() > 8) throw std::runtime_error("model proposed more than 8 edits");
+    if (array.size() > 8) return {};
     std::vector<EditCandidate> output;
     for (const auto& item : array) {
       const std::size_t start = item.at("start_byte").as_size();
@@ -134,16 +134,18 @@ std::vector<EditCandidate> generated_proposals(Backend& backend, const std::stri
       const std::string source = item.at("source").as_string();
       const std::string replacement = item.at("replacement").as_string();
       if (start > end || end > text.size() || text.substr(start, end - start) != source) {
-        throw std::runtime_error("model proposed a stale or invalid source range");
+        continue;
       }
       if (source.empty() || replacement.empty() || source == replacement) {
-        throw std::runtime_error("model lexical edits must replace nonempty, changed text");
+        continue;
       }
       output.push_back(EditCandidate{start, end, replacement, EditKind::kLexical});
     }
     return output;
-  } catch (const json::Error& error) {
-    throw std::runtime_error(std::string("model returned invalid edit JSON: ") + error.what());
+  } catch (const json::Error&) {
+    // Generated lexical edits are untrusted optional hints. Discard malformed
+    // output so deterministic formatting and duplicate removal still run.
+    return {};
   }
 }
 

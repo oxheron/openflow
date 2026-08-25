@@ -253,7 +253,11 @@ Leave that terminal open. `openflow-host` stores its administrator credential
 at `$XDG_DATA_HOME/openflow-server/admin-token` (or the corresponding
 `~/.local/share` path) with user-only permissions; routine pairing does not
 require viewing or copying it. Models and approved devices persist across host
-restarts.
+restarts. The foreground launcher prints finalized raw Whisper transcripts and
+any differing cleaned transcript for local diagnostics. Because those lines can
+contain sensitive dictated text, use `OPENFLOW_PRINT_TRANSCRIPTS=0 ./openflow-host`
+to disable them. The background server does not print transcript content unless
+`OPENFLOW_PRINT_TRANSCRIPTS=1` is explicitly configured.
 
 In another Arch terminal, join Tailscale and publish only the loopback service:
 
