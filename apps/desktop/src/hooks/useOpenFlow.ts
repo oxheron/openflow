@@ -15,7 +15,7 @@ import type {
   ServerEvent,
 } from "../domain/protocol";
 import { TargetTracker } from "../domain/targetTracking";
-import { PcmAudioCapture, SpeechBoundaryDetector, type AudioCaptureDiagnostics } from "../lib/audioCapture";
+import { PcmAudioCapture, SpeechBoundaryDetector } from "../lib/audioCapture";
 import {
   applyNativePatch,
   captureTarget,
@@ -26,7 +26,7 @@ import {
   type PlatformCapabilities,
   type TargetLease,
 } from "../lib/bridge";
-import { friendlyError, isTauriRuntime, randomUuid, sha256Hex } from "../lib/runtime";
+import { friendlyError, randomUuid, sha256Hex } from "../lib/runtime";
 import { OpenFlowServerClient } from "../lib/serverClient";
 
 export interface OpenFlowController {
@@ -39,7 +39,6 @@ export interface OpenFlowController {
   models: ModelSpec[];
   session: DictationState;
   transcript: string;
-  audioDiagnostics: AudioCaptureDiagnostics | null;
   connect: () => Promise<void>;
   disconnect: () => void;
   toggle: () => Promise<void>;
@@ -63,7 +62,6 @@ export function useOpenFlow(settings: DesktopSettings): OpenFlowController {
   const [platform, setPlatform] = useState<PlatformCapabilities | null>(null);
   const [deliveryPolicy, setDeliveryPolicy] = useState<TargetLease["policy"] | null>(null);
   const [deliveryReason, setDeliveryReason] = useState<string | null>(null);
-  const [audioDiagnostics, setAudioDiagnostics] = useState<AudioCaptureDiagnostics | null>(null);
   const [session, dispatch] = useReducer(dictationReducer, initialDictationState);
   const sessionRef = useRef(session);
   const modelsRef = useRef(models);
@@ -101,13 +99,6 @@ export function useOpenFlow(settings: DesktopSettings): OpenFlowController {
       .then(setPlatform)
       .catch(() => undefined);
   }, []);
-  useEffect(() => {
-    if (!isTauriRuntime() || platform?.platform !== "macos") return;
-    // WKWebView can leave a new getUserMedia request pending after the app
-    // becomes inactive. Acquire once while the initial window is foreground;
-    // the disabled track can then be re-enabled by a global hotkey.
-    void audioRef.current.prepare(setAudioDiagnostics).catch(() => undefined);
-  }, [platform?.platform]);
 
   const endLocalResources = useCallback(async () => {
     startGenerationRef.current += 1;
@@ -512,15 +503,12 @@ export function useOpenFlow(settings: DesktopSettings): OpenFlowController {
       boundaryRef.current = new SpeechBoundaryDetector();
       await audioRef.current.start((frame) => {
         if (!client.sendAudio(frame)) {
-          emit({
-            type: "fail",
-            message: "Audio stopped because the server or network is not keeping up",
-          });
+          emit({ type: "fail", message: "Audio stopped because the server or network is not keeping up" });
           abortActiveSession();
           return;
         }
         if (boundaryRef.current.process(frame)) client.sendControl({ type: "commit" });
-      }, setAudioDiagnostics);
+      });
       if (startGenerationRef.current !== startGeneration) {
         await audioRef.current.stop().catch(() => undefined);
       }
@@ -580,7 +568,7 @@ export function useOpenFlow(settings: DesktopSettings): OpenFlowController {
   useEffect(
     () => () => {
       clientRef.current?.close();
-      void endLocalResources().finally(() => audioRef.current.dispose());
+      void endLocalResources();
     },
     [endLocalResources],
   );
@@ -664,7 +652,6 @@ export function useOpenFlow(settings: DesktopSettings): OpenFlowController {
       models,
       session,
       transcript: renderedTranscript(session),
-      audioDiagnostics,
       connect,
       disconnect,
       toggle,
@@ -681,7 +668,6 @@ export function useOpenFlow(settings: DesktopSettings): OpenFlowController {
     }),
     [
       activateModel,
-      audioDiagnostics,
       capabilities,
       cancelModelDownload,
       connect,

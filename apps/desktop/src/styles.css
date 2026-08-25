@@ -388,14 +388,6 @@ kbd {
   color: var(--danger);
   background: rgba(242, 143, 130, 0.045);
 }
-.inline-alert.success {
-  border-color: rgba(152, 230, 196, 0.2);
-  color: var(--mint);
-  background: rgba(152, 230, 196, 0.045);
-}
-.spin {
-  animation: spin 1s linear infinite;
-}
 .inline-alert svg {
   flex: 0 0 auto;
   margin-top: 1px;
@@ -1198,11 +1190,6 @@ kbd {
 @keyframes wave {
   to {
     transform: scaleY(1);
-  }
-}
-@keyframes spin {
-  to {
-    transform: rotate(360deg);
   }
 }
 @keyframes ring {
