@@ -78,7 +78,7 @@ impl ServerConfig {
             admin_token: env::var("OPENFLOW_ADMIN_TOKEN").ok(),
             rotate_bootstrap_admin_token: env::var_os("OPENFLOW_ROTATE_BOOTSTRAP_ADMIN_TOKEN")
                 .is_some(),
-            pairing_ttl: Duration::from_secs(10 * 60),
+            pairing_ttl: Duration::from_mins(10),
             // 60 seconds of 16 kHz mono PCM S16LE. This also keeps the
             // JSON-expanded native worker frame below its 16 MiB ceiling.
             max_audio_bytes_per_session: 60 * 16_000 * 2,

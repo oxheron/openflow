@@ -28,8 +28,8 @@ use crate::error::ServerError;
 
 const MAX_WORKER_FRAME_BYTES: usize = 16 * 1024 * 1024;
 const WORKER_QUEUE_CAPACITY: usize = 8;
-const WORKER_CALL_TIMEOUT: Duration = Duration::from_secs(5 * 60);
-const WORKER_RESPONSE_TIMEOUT: Duration = Duration::from_secs(6 * 60);
+const WORKER_CALL_TIMEOUT: Duration = Duration::from_mins(5);
+const WORKER_RESPONSE_TIMEOUT: Duration = Duration::from_mins(6);
 const WORKER_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 const WORKER_TRANSPORT_PREFIX: &str = "native worker transport failure";
 

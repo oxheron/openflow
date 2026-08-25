@@ -12,7 +12,7 @@ use tokio::{
 const LOCAL_ADDRESS: &str = "127.0.0.1:8765";
 // Startup re-verifies cached model hashes before binding, which can take a
 // while on a workstation with several multi-gigabyte models on slower storage.
-const START_TIMEOUT: Duration = Duration::from_secs(6 * 60);
+const START_TIMEOUT: Duration = Duration::from_mins(6);
 const LOCAL_PROTOCOL_VERSION: u16 = 1;
 const MAX_HEALTH_RESPONSE_BYTES: u64 = 16 * 1024;
 
