@@ -26,3 +26,10 @@ must_use_candidate = "allow"
 lto = "thin"
 codegen-units = 1
 strip = "symbols"
+
+[patch.crates-io]
+# apple-cf 0.9.3's trailing-closure call requires a newer Dispatch overlay even
+# though the crate otherwise supports Swift 5.9. Keep the exact release source
+# with an explicit DispatchWorkItem so Intel Macs can build with the standalone
+# Swift 5.9 toolchain and the Xcode 14.3 macOS SDK.
+apple-cf = { path = "vendor/apple-cf-0.9.3" }
