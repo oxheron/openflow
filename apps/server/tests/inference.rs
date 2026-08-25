@@ -54,6 +54,7 @@ async fn actual_workers_complete_a_mock_session() {
         Some(&llm_path),
         directory.path().to_path_buf(),
         "mock".into(),
+        false,
     )
     .await
     .unwrap();

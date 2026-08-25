@@ -1,6 +1,7 @@
 use axum::http::{HeaderMap, header};
 use openflow_server::{
     error::ServerError,
+    inference::terminal_safe_transcript,
     routes::{common_utf8_prefix, enforce_memory_budget, websocket_bearer},
 };
 use std::sync::Arc;
@@ -9,6 +10,14 @@ use tokio::sync::{Semaphore, mpsc};
 #[test]
 fn stable_prefix_stops_on_a_character_boundary() {
     assert_eq!(common_utf8_prefix("héllo", "héy"), "hé".len());
+}
+
+#[test]
+fn transcript_terminal_output_removes_control_sequences() {
+    assert_eq!(
+        terminal_safe_transcript("hello\n\u{1b}[31mworld\r"),
+        "hello\n�[31mworld�"
+    );
 }
 
 #[test]

@@ -49,6 +49,7 @@ async fn test_app() -> (Router, AppState, String, tempfile::TempDir) {
         llm_worker_path: None,
         worker_backend: "mock".into(),
         interactive_pairing: false,
+        print_transcripts: false,
     });
     let state = AppState::new(config, Arc::new(UnavailableInferenceEngine))
         .await

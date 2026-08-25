@@ -31,6 +31,7 @@ async fn main() -> anyhow::Result<()> {
                 llm_worker.as_deref(),
                 config.model_cache_dir.clone(),
                 config.worker_backend.clone(),
+                config.print_transcripts,
             )
             .await?,
         )

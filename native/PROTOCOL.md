@@ -68,8 +68,9 @@ Binary: `openflow-llm-worker`.
   formatting/exact adjacent-duplicate candidates plus llama.cpp-generated lexical
   candidates. Generation is greedy, non-thinking, capped at 512 tokens/eight edits, and
   grammar-constrained to JSON. Every generated source string must exactly match its UTF-8
-  byte range before the proposal reaches confidence gating. The mock backend deliberately
-  generates no lexical edits.
+  byte range before the proposal reaches confidence gating. Incomplete, malformed, and stale
+  model proposals are discarded rather than suppressing deterministic safe edits. The mock
+  backend deliberately generates no lexical edits.
 - `cleanup` scores and gates candidates, then returns corrected `text`, `original_text`,
   and a decision record for every candidate.
 

@@ -430,6 +430,7 @@ pub struct WorkerInferenceEngine {
     model_cache_dir: PathBuf,
     backend: String,
     compute_backends: Vec<ComputeBackend>,
+    print_transcripts: bool,
     state: Mutex<WorkerEngineState>,
 }
 
@@ -481,6 +482,7 @@ impl WorkerInferenceEngine {
         llm_path: Option<&Path>,
         model_cache_dir: PathBuf,
         backend: String,
+        print_transcripts: bool,
     ) -> Result<Self, ServerError> {
         let asr =
             Arc::new(WorkerClient::spawn_checked(asr_path, Some("openflow-asr-worker")).await?);
@@ -528,6 +530,7 @@ impl WorkerInferenceEngine {
             model_cache_dir,
             backend,
             compute_backends,
+            print_transcripts,
             state: Mutex::new(WorkerEngineState::default()),
         })
     }
@@ -655,6 +658,9 @@ impl WorkerInferenceEngine {
             )
             .await?;
         let asr: AsrResult = serde_json::from_value(response)?;
+        if request.final_segment && self.print_transcripts {
+            print_raw_transcript(request.config.session_id, request.segment_id, &asr.text);
+        }
         let tokens: Vec<TokenEvidence> = if asr.segments.is_empty() {
             asr.tokens
                 .into_iter()
@@ -751,6 +757,15 @@ impl WorkerInferenceEngine {
         } else {
             (asr.text.clone(), Vec::new())
         };
+
+        if request.final_segment && self.print_transcripts {
+            print_cleanup_result(
+                request.config.session_id,
+                request.segment_id,
+                &asr.text,
+                &formatted_text,
+            );
+        }
 
         if request.final_segment {
             let llm_started = worker_session.llm_started;
@@ -917,6 +932,48 @@ fn decode_compute_backends(values: &[String]) -> Vec<ComputeBackend> {
 
 fn is_worker_transport_failure(error: &ServerError) -> bool {
     matches!(error, ServerError::Inference(message) if message.starts_with(WORKER_TRANSPORT_PREFIX))
+}
+
+fn print_raw_transcript(session_id: Uuid, segment_id: u64, raw: &str) {
+    eprintln!();
+    eprintln!(
+        "========== OpenFlow raw transcript · session {session_id} · segment {segment_id} =========="
+    );
+    eprintln!("{}", terminal_safe_transcript(raw));
+    eprintln!("================================================================================");
+    eprintln!();
+}
+
+fn print_cleanup_result(session_id: Uuid, segment_id: u64, raw: &str, formatted: &str) {
+    if formatted == raw {
+        eprintln!(
+            "OpenFlow cleanup · session {session_id} · segment {segment_id}: unchanged or unavailable"
+        );
+        return;
+    }
+    eprintln!();
+    eprintln!(
+        "========== OpenFlow cleaned transcript · session {session_id} · segment {segment_id} =========="
+    );
+    eprintln!("{}", terminal_safe_transcript(formatted));
+    eprintln!(
+        "===================================================================================="
+    );
+    eprintln!();
+}
+
+/// Removes terminal control characters from model text before foreground display.
+#[doc(hidden)]
+pub fn terminal_safe_transcript(text: &str) -> String {
+    text.chars()
+        .map(|character| {
+            if character == '\n' || character == '\t' || !character.is_control() {
+                character
+            } else {
+                '\u{fffd}'
+            }
+        })
+        .collect()
 }
 
 /// Validates and encodes PCM for the compact native-worker transport.

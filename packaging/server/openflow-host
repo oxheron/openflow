@@ -93,6 +93,7 @@ fi
 
 echo "OpenFlow model host is starting in this terminal."
 echo "When a client requests access, verify its six-digit code here and answer y or n."
+echo "Final raw transcripts will be printed here (set OPENFLOW_PRINT_TRANSCRIPTS=0 to disable)."
 echo "Press Ctrl+C to stop; models and approved devices are retained."
 
 export OPENFLOW_ADMIN_TOKEN="$admin_token"
@@ -102,4 +103,5 @@ export OPENFLOW_ASR_WORKER="${OPENFLOW_ASR_WORKER:-$SCRIPT_DIR/openflow-asr-work
 export OPENFLOW_LLM_WORKER="${OPENFLOW_LLM_WORKER:-$SCRIPT_DIR/openflow-llm-worker}"
 export OPENFLOW_WORKER_BACKEND="${OPENFLOW_WORKER_BACKEND:-auto}"
 export OPENFLOW_INTERACTIVE_PAIRING=1
+export OPENFLOW_PRINT_TRANSCRIPTS="${OPENFLOW_PRINT_TRANSCRIPTS:-1}"
 exec "$SCRIPT_DIR/openflow-server"

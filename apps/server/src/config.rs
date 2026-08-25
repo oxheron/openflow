@@ -29,6 +29,8 @@ pub struct ServerConfig {
     pub worker_backend: String,
     /// Allows a foreground terminal to approve new devices interactively.
     pub interactive_pairing: bool,
+    /// Prints finalized transcripts to the server terminal when explicitly enabled.
+    pub print_transcripts: bool,
 }
 
 impl ServerConfig {
@@ -90,6 +92,7 @@ impl ServerConfig {
             llm_worker_path: env::var_os("OPENFLOW_LLM_WORKER").map(PathBuf::from),
             worker_backend: env::var("OPENFLOW_WORKER_BACKEND").unwrap_or_else(|_| "auto".into()),
             interactive_pairing: env::var_os("OPENFLOW_INTERACTIVE_PAIRING").is_some(),
+            print_transcripts: env_flag("OPENFLOW_PRINT_TRANSCRIPTS"),
         };
         config.validate()?;
         Ok(config)
@@ -127,4 +130,11 @@ impl ServerConfig {
 
 fn is_loopback(ip: IpAddr) -> bool {
     ip.is_loopback()
+}
+
+fn env_flag(name: &str) -> bool {
+    env::var_os(name).is_some_and(|value| {
+        let value = value.to_string_lossy();
+        !value.is_empty() && value != "0" && !value.eq_ignore_ascii_case("false")
+    })
 }

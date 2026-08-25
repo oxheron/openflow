@@ -64,6 +64,11 @@ Do not approve an unexpected request or a mismatched name/code. Background
 services should leave the feature disabled and use administrator-created,
 single-use pairing codes instead.
 
+Transcript content is not logged by the normal server configuration. The
+foreground `openflow-host` launcher enables terminal transcript output for
+interactive diagnostics; this can expose dictated text to terminal scrollback
+and log capture. Set `OPENFLOW_PRINT_TRANSCRIPTS=0` when that is inappropriate.
+
 Tailscale Serve is the recommended remote path because it can terminate HTTPS
 for a loopback service inside a tailnet. Application authentication is still
 required. Direct port forwarding must use the built-in TLS listener or a
